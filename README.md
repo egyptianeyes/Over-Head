@@ -35,6 +35,14 @@ successful result is stored in `cache/aircraft-identities.json` and reused on
 future sightings. If ADSBDB is unavailable or has no matching record, the live
 ADSB.lol fields and built-in ICAO type-name table remain the fallback.
 
+When ADSBDB has a route for the broadcast callsign, the main heading displays
+the IATA airport pair, such as `LHR-LAX`, and the flight number moves to the
+identity line beside the registration. Routes are cached for six hours in
+`cache/flight-routes.json`. Registration-style and unknown callsigns retain the
+normal callsign heading. Neither ADSB.lol nor ADSBDB supplies trustworthy
+departure, arrival, or remaining-flight times, so Over-Head does not invent or
+estimate them. If no airline artwork is available, the logo area remains empty.
+
 Place `beep-tone.mp3` in the repository root beside `monitor.py`. Sound is on by
 default and plays when tracking starts or the nearest selected aircraft changes.
 Use the bell in the header to mute or restore it; the choice is remembered. A
@@ -80,7 +88,7 @@ coordinates of the display location:
   "refresh_seconds": 10,
   "output_rgb": "output/frame.rgb",
   "output_png": "output/frame.png",
-  "demo_on_failure": true
+  "demo_on_failure": false
 }
 ```
 
@@ -114,9 +122,10 @@ python3 overhead.py --watch
 ```
 
 The program refreshes `frame.rgb` and `frame.png` every ten seconds by default.
-If the API cannot be reached, it produces a labelled demo frame rather than
-leaving the output undefined. Set `demo_on_failure` to `false` if failure should
-instead stop the program.
+Sample aircraft are displayed only when the program is explicitly started with
+`--demo`. If the live API is temporarily unavailable, the browser monitor keeps
+the last real traffic snapshot on screen and reports `RECONNECTING`. It never
+substitutes the bundled demonstration aircraft during live operation.
 
 ## Test
 

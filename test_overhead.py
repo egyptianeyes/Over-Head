@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from monitor import AircraftIdentityStore, FrameState, RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg, update_state
+from monitor import AircraftIdentityStore, FlightRouteStore, FrameState, PAGE, RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg, update_state
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -88,6 +88,30 @@ class OverHeadTests(unittest.TestCase):
                 update_state(state, settings, False, EmptyStore(), EmptyStore())
             self.assertEqual(state.payload["mode"], "reconnecting")
             self.assertEqual(state.payload["aircraft_id"], aircraft_identity(plane))
+
+    def test_route_is_cached_by_callsign(self):
+        class StubRoutes(FlightRouteStore):
+            calls = 0
+
+            def _fetch(self, callsign):
+                self.calls += 1
+                return {
+                    "origin": {"iata_code": "LHR", "icao_code": "EGLL"},
+                    "destination": {"iata_code": "LAX", "icao_code": "KLAX"},
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "flight-routes.json"
+            first = StubRoutes(cache)
+            self.assertEqual(first.get({"flight": "BAW283", "r": "G-STBH"})["route"], "LHR-LAX")
+            self.assertEqual(first.calls, 1)
+            second = StubRoutes(cache)
+            self.assertEqual(second.get({"flight": "BAW283"})["route"], "LHR-LAX")
+            self.assertEqual(second.calls, 0)
+            self.assertEqual(second.get({"flight": "N688CB", "r": "N688CB"}), {})
+
+    def test_missing_logo_has_no_text_fallback(self):
+        self.assertNotIn(b"operator-badge", PAGE)
 
     def test_radar_centres_aircraft_at_home(self):
         settings = Settings(latitude=51.5, longitude=-3.3, radius_nm=25)
