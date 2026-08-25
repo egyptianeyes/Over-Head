@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from monitor import AircraftIdentityStore, FlightRouteStore, FrameState, PAGE, RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg, update_state
+from monitor import AircraftIdentityStore, FlagStore, FlightRouteStore, FrameState, PAGE, RADAR_RANGES, aircraft_identity, aircraft_name, flight_details, operator_code, radar_contacts, safe_svg, update_state
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -28,6 +28,10 @@ class OverHeadTests(unittest.TestCase):
     def test_operator_code_ignores_registration_callsigns(self):
         self.assertEqual(operator_code({"flight": "RYR6432", "r": "SP-RZX"}), "RYR")
         self.assertEqual(operator_code({"flight": "GBNZB", "r": "G-BNZB"}), "")
+
+    def test_flight_details_deduplicates_formatted_registration(self):
+        self.assertEqual(flight_details({"flight": "GBTDV", "r": "G-BTDV"}), "GBTDV")
+        self.assertEqual(flight_details({"flight": "BAW283", "r": "G-STBH"}), "BAW283  \u00b7  G-STBH")
 
     def test_aircraft_identity_prefers_hex_code(self):
         plane = {"hex": "4ca259", "r": "EI-DHD", "flight": "RYR701"}
@@ -96,22 +100,31 @@ class OverHeadTests(unittest.TestCase):
             def _fetch(self, callsign):
                 self.calls += 1
                 return {
-                    "origin": {"iata_code": "LHR", "icao_code": "EGLL"},
-                    "destination": {"iata_code": "LAX", "icao_code": "KLAX"},
+                    "origin": {"iata_code": "LHR", "icao_code": "EGLL", "country_iso_name": "GB"},
+                    "destination": {"iata_code": "LAX", "icao_code": "KLAX", "country_iso_name": "US"},
                 }
 
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "flight-routes.json"
             first = StubRoutes(cache)
-            self.assertEqual(first.get({"flight": "BAW283", "r": "G-STBH"})["route"], "LHR-LAX")
+            self.assertEqual(first.get({"flight": "BAW283", "r": "G-STBH"})["route"], "LHR to LAX")
             self.assertEqual(first.calls, 1)
             second = StubRoutes(cache)
-            self.assertEqual(second.get({"flight": "BAW283"})["route"], "LHR-LAX")
+            self.assertEqual(second.get({"flight": "BAW283"})["route"], "LHR to LAX")
             self.assertEqual(second.calls, 0)
             self.assertEqual(second.get({"flight": "N688CB", "r": "N688CB"}), {})
 
     def test_missing_logo_has_no_text_fallback(self):
         self.assertNotIn(b"operator-badge", PAGE)
+
+    def test_unknown_route_has_muted_placeholder(self):
+        self.assertIn(b"N/A to N/A", PAGE)
+        self.assertIn(b"route-unknown", PAGE)
+
+    def test_route_flags_sit_outside_airport_pair(self):
+        self.assertLess(PAGE.index(b"addFlag('origin'"), PAGE.index(b"origin.textContent"))
+        self.assertLess(PAGE.index(b"destination.textContent"), PAGE.index(b"addFlag('destination'"))
+        self.assertEqual(FlagStore._codepoints("GB"), "1f1ec-1f1e7")
 
     def test_radar_centres_aircraft_at_home(self):
         settings = Settings(latitude=51.5, longitude=-3.3, radius_nm=25)

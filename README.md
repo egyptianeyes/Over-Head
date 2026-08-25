@@ -13,10 +13,11 @@ Every render writes the same pixels in two formats:
 The raw frame is exactly 24,576 bytes: `128 × 64 × 3`.
 
 Airline logos are resolved by the three-letter ICAO operator code. Over-Head
-tries Soaring Symbols first, then the Jxck-S airline-logo collection. Successful
-logos are cached in `cache/logos`, so they remain available through a temporary
-network outage. An operator-code badge is always available when neither source
-has a matching logo.
+tries Soaring Symbols SVG artwork first, then a higher-resolution ICAO logo
+collection, with the Jxck-S tracker banners retained only as a final fallback.
+Successful logos are cached in `cache/logos-v2`, so they remain available
+through a temporary network outage. If no matching artwork exists, the logo
+area remains empty.
 
 The optional right-hand radar plots every recently positioned aircraft returned
 inside the active tracking radius. Select **RADAR** or press `R` to open or hide
@@ -36,10 +37,12 @@ future sightings. If ADSBDB is unavailable or has no matching record, the live
 ADSB.lol fields and built-in ICAO type-name table remain the fallback.
 
 When ADSBDB has a route for the broadcast callsign, the main heading displays
-the IATA airport pair, such as `LHR-LAX`, and the flight number moves to the
+the IATA airport pair, such as `LHR to LAX`, and the flight number moves to the
 identity line beside the registration. Routes are cached for six hours in
-`cache/flight-routes.json`. Registration-style and unknown callsigns retain the
-normal callsign heading. Neither ADSB.lol nor ADSBDB supplies trustworthy
+`cache/flight-routes.json`. When no verified route is available, the heading
+shows a muted `N/A to N/A` placeholder and the flight number or registration
+stays on the identity line below. Known routes show cached Twemoji SVG flags
+outside the airport pair, for example `[UK] LHR to LAX [US]`. Neither ADSB.lol nor ADSBDB supplies trustworthy
 departure, arrival, or remaining-flight times, so Over-Head does not invent or
 estimate them. If no airline artwork is available, the logo area remains empty.
 
@@ -164,7 +167,8 @@ API availability.
 
 Airline artwork is retrieved, when available, from
 [Soaring Symbols](https://github.com/soaring-symbols/soaring-symbols) with a
-fallback to the
+high-resolution fallback from
+[sexym0nk3y/airline-logos](https://github.com/sexym0nk3y/airline-logos), followed by the
 [Jxck-S airline-logo collection](https://github.com/Jxck-S/airline-logos).
 Airline names, marks and logos remain the property of their respective owners.
 They are displayed for aircraft identification and are not covered by
@@ -172,6 +176,11 @@ Over-Head's MIT licence.
 
 Over-Head is an independent project and is not affiliated with or endorsed by
 TheFlightWall, ADSB.lol, ADSBDB, Soaring Symbols, Jxck-S, or any airline.
+
+Country flag artwork is provided by the maintained
+[Twemoji](https://github.com/jdecked/twemoji) project under the
+[CC-BY 4.0 licence](https://creativecommons.org/licenses/by/4.0/) and cached
+locally after first use.
 
 ### Sound effect
 

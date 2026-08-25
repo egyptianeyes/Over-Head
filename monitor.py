@@ -37,6 +37,14 @@ JXCK_LOGO_URLS = (
     "https://raw.githubusercontent.com/Jxck-S/airline-logos/main/radarbox_banners/{code}.png",
     "https://raw.githubusercontent.com/Jxck-S/airline-logos/main/flightaware_logos/{code}.png",
 )
+HIGH_RES_LOGO_URL = (
+    "https://raw.githubusercontent.com/sexym0nk3y/airline-logos/"
+    "master/logos/{code}.png"
+)
+TWEMOJI_FLAG_URL = (
+    "https://raw.githubusercontent.com/jdecked/twemoji/"
+    "main/assets/svg/{codepoints}.svg"
+)
 USER_AGENT = "Over-Head/0.2 (+personal wall display)"
 MAX_LOGO_BYTES = 1_000_000
 RADAR_RANGES = (5, 10, 15, 25, 40, 60, 100)
@@ -100,6 +108,21 @@ def aircraft_identity(plane: dict[str, Any] | None) -> str:
     return ""
 
 
+def flight_details(plane: dict[str, Any] | None, registration: str = "") -> str:
+    """Return callsign and registration without repeating equivalent values."""
+    if not plane:
+        return ""
+    values = (str(plane.get("flight") or "").strip(), registration or str(plane.get("r") or "").strip())
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalised = re.sub(r"[^A-Z0-9]", "", value.upper())
+        if value and normalised and normalised not in seen:
+            unique.append(value)
+            seen.add(normalised)
+    return "  \u00b7  ".join(unique)
+
+
 def safe_svg(data: bytes) -> bytes | None:
     """Reject active or externally-referencing SVG content before serving it."""
     if len(data) > MAX_LOGO_BYTES:
@@ -157,7 +180,7 @@ def radar_contacts(aircraft: list[dict[str, Any]], settings, selected: dict[str,
 class LogoStore:
     """Resolve logos once, cache them locally, and remember missing operators."""
 
-    def __init__(self, cache_dir: Path = Path("cache/logos")) -> None:
+    def __init__(self, cache_dir: Path = Path("cache/logos-v2")) -> None:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.index_path = cache_dir / "soaring-airlines.json"
@@ -218,6 +241,15 @@ class LogoStore:
                 return data, "image/png", "Jxck-S airline-logos"
         return None
 
+    def _high_resolution(self, code: str) -> tuple[bytes, str, str] | None:
+        try:
+            data = self._download(HIGH_RES_LOGO_URL.format(code=code))
+        except (OSError, ValueError, urllib.error.URLError, TimeoutError):
+            return None
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return data, "image/png", "sexym0nk3y airline-logos"
+        return None
+
     def get(self, code: str) -> tuple[bytes, str, str] | None:
         if not re.fullmatch(r"[A-Z]{3}", code) or code in self._missing:
             return None
@@ -233,7 +265,7 @@ class LogoStore:
                 result = self._soaring(code)
             except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError, TimeoutError):
                 result = None
-            result = result or self._jxck(code)
+            result = result or self._high_resolution(code) or self._jxck(code)
             if result:
                 data, content_type, source = result
                 suffix = "svg" if content_type == "image/svg+xml" else "png"
@@ -241,6 +273,45 @@ class LogoStore:
                 return result
             self._missing.add(code)
             return None
+
+
+class FlagStore:
+    """Retrieve country flags as safe Twemoji SVGs and cache them locally."""
+
+    def __init__(self, cache_dir: Path = Path("cache/flags")) -> None:
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._missing: set[str] = set()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _codepoints(country_code: str) -> str:
+        return "-".join(f"{0x1F1E6 + ord(character) - ord('A'):x}" for character in country_code)
+
+    def get(self, country_code: str) -> bytes | None:
+        code = str(country_code or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", code) or code in self._missing:
+            return None
+        path = self.cache_dir / f"{code}.svg"
+        with self._lock:
+            try:
+                return path.read_bytes()
+            except OSError:
+                pass
+            request = urllib.request.Request(
+                TWEMOJI_FLAG_URL.format(codepoints=self._codepoints(code)),
+                headers={"User-Agent": USER_AGENT},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=6) as response:
+                    data = safe_svg(response.read(MAX_LOGO_BYTES + 1))
+            except (OSError, ValueError, urllib.error.URLError, TimeoutError):
+                data = None
+            if not data:
+                self._missing.add(code)
+                return None
+            path.write_bytes(data)
+            return data
 
 
 class AircraftIdentityStore:
@@ -374,9 +445,11 @@ class FlightRouteStore:
         if not origin_code or not destination_code:
             return {}
         return {
-            "route": f"{origin_code}-{destination_code}",
+            "route": f"{origin_code} to {destination_code}",
             "origin": origin_code,
             "destination": destination_code,
+            "origin_country": str(origin.get("country_iso_name") or "").strip().upper(),
+            "destination_country": str(destination.get("country_iso_name") or "").strip().upper(),
             "cached_at": time.time(),
         }
 
@@ -391,7 +464,9 @@ class FlightRouteStore:
             return {}
         with self._lock:
             cached = self._records.get(callsign)
-            if isinstance(cached, dict) and time.time() - float(cached.get("cached_at", 0)) < self.ttl_seconds:
+            if isinstance(cached, dict) and cached.get("origin_country") and cached.get("destination_country") and time.time() - float(cached.get("cached_at", 0)) < self.ttl_seconds:
+                if cached.get("origin") and cached.get("destination"):
+                    cached["route"] = f"{cached['origin']} to {cached['destination']}"
                 return cached
             if callsign in self._unavailable:
                 return {}
@@ -443,7 +518,10 @@ PAGE = b"""<!doctype html>
     .information { min-width:0; padding:clamp(26px,4vw,76px); display:flex; flex-direction:column; justify-content:space-between; }
     .flight-heading { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:clamp(24px,3vw,56px); }
     .flight-copy { min-width:0; }
-    .callsign { overflow:hidden; color:var(--white); font-size:clamp(64px,10.5vw,198px); font-weight:800; letter-spacing:-.065em; line-height:.88; white-space:nowrap; }
+    .callsign { overflow:visible; color:var(--white); font-size:clamp(64px,10.5vw,198px); font-weight:800; letter-spacing:-.065em; line-height:.88; white-space:nowrap; display:flex; align-items:center; gap:.12em; }
+    .callsign.route-unknown { color:var(--muted); }
+    .route-flag { width:.62em; height:.62em; object-fit:contain; filter:drop-shadow(0 0 10px rgba(108,154,172,.2)); }
+    .route-join { color:var(--muted); font-size:.45em; font-weight:650; letter-spacing:0; }
     .identity { margin-top:clamp(18px,2.2vh,34px); min-width:0; display:flex; flex-direction:column; gap:.24em; }
     .registration { color:var(--muted); font-size:clamp(22px,2.5vw,44px); font-weight:700; letter-spacing:.1em; }
     .aircraft-name { color:var(--white); font-size:clamp(17px,1.55vw,28px); font-weight:650; letter-spacing:.065em; }
@@ -454,6 +532,8 @@ PAGE = b"""<!doctype html>
     .logo-box img { display:none; max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; filter:drop-shadow(0 0 12px rgba(108,154,172,.15)); }
     .logo-box.wide img { transform:scale(1.7); }
     .logo-box.standard img { transform:scale(1.25); }
+    .logo-box.vector-wordmark { width:clamp(260px,21vw,410px); height:clamp(100px,14vh,180px); }
+    .logo-box.vector-wordmark img { transform:scale(3); }
     .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
     .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
     .metric-label { color:var(--muted); font-size:clamp(11px,1vw,18px); font-weight:700; letter-spacing:.18em; }
@@ -484,6 +564,7 @@ PAGE = b"""<!doctype html>
     .wall.no-aircraft .information { justify-content:center; }
     .wall.no-aircraft .flight-heading { display:block; }
     .wall.no-aircraft .callsign { text-align:center; font-size:clamp(100px,15vw,260px); line-height:1; letter-spacing:0; }
+    .wall.no-aircraft .callsign { justify-content:center; }
     .wall.no-aircraft .identity,.wall.no-aircraft .logo-box,.wall.no-aircraft .metrics { display:none; }
     footer { color:#52717e; font:600 clamp(11px,.9vw,16px)/1.2 "Segoe UI",sans-serif; letter-spacing:.1em; }
     @media (max-width:1150px) { .wall.radar-open .content { grid-template-columns:minmax(0,1fr) minmax(280px,36vw); } .wall.radar-open .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
@@ -526,6 +607,17 @@ PAGE = b"""<!doctype html>
     const number=(value,digits=0)=>value==null?'--':Number(value).toFixed(digits);
     const altitude=value=>typeof value==='number'?Math.round(value).toLocaleString()+' FT':String(value||'--').toUpperCase();
     function vertical(value){ if(typeof value!=='number')return 'LEVEL'; if(value>150)return '\\u2191 '+Math.abs(Math.round(value)).toLocaleString(); if(value<-150)return '\\u2193 '+Math.abs(Math.round(value)).toLocaleString(); return 'LEVEL'; }
+    function renderHeading(d,hasAircraft){
+      const heading=byId('callsign'); heading.replaceChildren(); const routeKnown=Boolean(d.route); heading.classList.toggle('route-unknown',hasAircraft&&!routeKnown);
+      if(!hasAircraft){ heading.textContent='-'; return; }
+      if(!routeKnown){ heading.textContent='N/A to N/A'; return; }
+      const addFlag=(side,available,revision)=>{ if(!available)return; const flag=document.createElement('img'); flag.className='route-flag'; flag.alt=''; flag.src='/'+side+'-flag?v='+encodeURIComponent(revision||''); heading.appendChild(flag); };
+      addFlag('origin',d.origin_flag_available,d.origin_flag_revision);
+      const origin=document.createElement('span'); origin.textContent=d.origin; heading.appendChild(origin);
+      const join=document.createElement('span'); join.className='route-join'; join.textContent='to'; heading.appendChild(join);
+      const destination=document.createElement('span'); destination.textContent=d.destination; heading.appendChild(destination);
+      addFlag('destination',d.destination_flag_available,d.destination_flag_revision);
+    }
     function updateSoundButton(){ const button=byId('sound-toggle'); button.classList.toggle('muted',!soundEnabled); button.classList.toggle('blocked',audioBlocked&&soundEnabled); button.setAttribute('aria-pressed',String(soundEnabled)); button.setAttribute('aria-label',!soundEnabled?'Enable aircraft change sound':audioBlocked?'Enable aircraft sound':'Mute aircraft change sound'); }
     async function playTone(){ if(!soundEnabled)return; const tone=byId('alert-tone'); try{ tone.currentTime=0; await tone.play(); audioBlocked=false; }catch(_){ audioBlocked=true; } updateSoundButton(); }
     function drawRadar(contacts,radius){
@@ -550,11 +642,11 @@ PAGE = b"""<!doctype html>
       try{
         const response=await fetch('/status?t='+Date.now(),{cache:'no-store'}); if(!response.ok)throw new Error('status'); const d=await response.json();
         const mode=String(d.mode||'live').toLowerCase(); byId('live').className='live '+mode; byId('mode').textContent=mode.toUpperCase();
-        const hasAircraft=Boolean(d.aircraft_id); byId('wall').classList.toggle('no-aircraft',!hasAircraft); byId('callsign').textContent=hasAircraft?(d.route||d.callsign||d.registration||d.aircraft_id):'-';
+        const hasAircraft=Boolean(d.aircraft_id); byId('wall').classList.toggle('no-aircraft',!hasAircraft); renderHeading(d,hasAircraft);
         if(d.aircraft_id&&d.aircraft_id!==trackedAircraftId){ trackedAircraftId=d.aircraft_id; playTone(); } else if(!d.aircraft_id){ trackedAircraftId=''; }
-        const flightIdentity=[d.callsign,d.registration].filter((value,index,list)=>value&&list.indexOf(value)===index).join('  \\u00b7  '); byId('registration').textContent=flightIdentity||'REGISTRATION UNKNOWN'; byId('aircraft-name').textContent=d.aircraft_name+(d.aircraft_type?'  \\u00b7  '+d.aircraft_type:'');
+        byId('registration').textContent=d.flight_details||d.registration||'REGISTRATION UNKNOWN'; byId('aircraft-name').textContent=d.aircraft_name+(d.aircraft_type?'  \\u00b7  '+d.aircraft_type:'');
         const logo=byId('operator-logo'),logoBox=byId('logo-box');
-        if(d.logo_available){ logo.onload=()=>{ const ratio=logo.naturalWidth&&logo.naturalHeight?logo.naturalWidth/logo.naturalHeight:2; const shape=ratio>2.2?'wide':ratio<.8?'tall':ratio<1.25?'square':'standard'; logoBox.className='logo-box '+shape; logo.style.display='block'; }; logo.onerror=()=>{logoBox.className='logo-box';logo.style.display='none'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
+        if(d.logo_available){ logo.onload=()=>{ const ratio=logo.naturalWidth&&logo.naturalHeight?logo.naturalWidth/logo.naturalHeight:2; const shape=d.logo_source==='Soaring Symbols'?'vector-wordmark':ratio>2.2?'wide':ratio<.8?'tall':ratio<1.25?'square':'standard'; logoBox.className='logo-box '+shape; logo.style.display='block'; }; logo.onerror=()=>{logoBox.className='logo-box';logo.style.display='none'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
         else { logo.removeAttribute('src'); logoBox.className='logo-box'; logo.style.display='none'; }
         byId('altitude').textContent=altitude(d.altitude); byId('speed').textContent=d.speed==null?'--':Math.round(d.speed)+' KT'; byId('vertical').textContent=vertical(d.vertical_rate);
         byId('distance-main').textContent=number(d.distance_nm,1);
@@ -579,15 +671,18 @@ class FrameState:
         self.png = b""
         self.logo = b""
         self.logo_type = "image/svg+xml"
+        self.origin_flag = b""
+        self.destination_flag = b""
         self.last_live_aircraft: list[dict[str, Any]] = []
         self.payload: dict[str, Any] = {"mode": "starting", "updated": "never", "total": 0}
 
-    def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, aircraft: list[dict[str, Any]], settings, logo: tuple[bytes, str, str] | None, identity: dict[str, str] | None = None, route: dict[str, Any] | None = None) -> None:
+    def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, aircraft: list[dict[str, Any]], settings, logo: tuple[bytes, str, str] | None, identity: dict[str, str] | None = None, route: dict[str, Any] | None = None, origin_flag: bytes | None = None, destination_flag: bytes | None = None) -> None:
         data = BytesIO()
         image.save(data, format="PNG")
         plane = plane or {}
         identity = identity or {}
         route = route or {}
+        registration = identity.get("registration") or str(plane.get("r") or "").strip()
         code = identity.get("operator_code") or operator_code(plane)
         logo_data, logo_type, logo_source = logo or (b"", "", "")
         payload = {
@@ -597,7 +692,12 @@ class FrameState:
             "aircraft_id": aircraft_identity(plane),
             "callsign": str(plane.get("flight") or "").strip(),
             "route": route.get("route", ""),
-            "registration": identity.get("registration") or str(plane.get("r") or "").strip(),
+            "origin": route.get("origin", ""), "destination": route.get("destination", ""),
+            "origin_flag_available": bool(origin_flag), "destination_flag_available": bool(destination_flag),
+            "origin_flag_revision": hashlib.sha256(origin_flag).hexdigest()[:12] if origin_flag else "",
+            "destination_flag_revision": hashlib.sha256(destination_flag).hexdigest()[:12] if destination_flag else "",
+            "registration": registration,
+            "flight_details": flight_details(plane, registration),
             "aircraft_type": str(plane.get("t") or "").strip() or identity.get("aircraft_type", ""),
             "aircraft_name": identity.get("aircraft_name") or aircraft_name(plane.get("t"), plane.get("desc")),
             "altitude": plane.get("alt_baro"), "speed": plane.get("gs"), "vertical_rate": plane.get("baro_rate"),
@@ -612,10 +712,12 @@ class FrameState:
             self.png = data.getvalue()
             self.logo = logo_data
             self.logo_type = logo_type or "application/octet-stream"
+            self.origin_flag = origin_flag or b""
+            self.destination_flag = destination_flag or b""
             self.payload = payload
 
 
-def update_state(state: FrameState, settings, demo: bool, logos: LogoStore, identities: AircraftIdentityStore, routes: FlightRouteStore | None = None) -> None:
+def update_state(state: FrameState, settings, demo: bool, logos: LogoStore, identities: AircraftIdentityStore, routes: FlightRouteStore | None = None, flags: FlagStore | None = None) -> None:
     if demo:
         aircraft, mode = DEMO["ac"], "demo"
     else:
@@ -631,18 +733,20 @@ def update_state(state: FrameState, settings, demo: bool, logos: LogoStore, iden
     plane, distance = select_nearest(aircraft, settings)
     identity = {} if demo else identities.get(plane)
     route = {} if demo or routes is None else routes.get(plane)
+    origin_flag = flags.get(route.get("origin_country", "")) if flags else None
+    destination_flag = flags.get(route.get("destination_country", "")) if flags else None
     image = render(plane, distance, mode)
     save_frame(image, settings)
     code = identity.get("operator_code") or operator_code(plane)
-    state.update(image, mode, plane, distance, aircraft, settings, logos.get(code), identity, route)
+    state.update(image, mode, plane, distance, aircraft, settings, logos.get(code), identity, route, origin_flag, destination_flag)
 
 
-def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore, identities: AircraftIdentityStore, routes: FlightRouteStore, refresh_event: threading.Event) -> None:
+def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore, identities: AircraftIdentityStore, routes: FlightRouteStore, flags: FlagStore, refresh_event: threading.Event) -> None:
     while True:
         refresh_event.wait(timeout=max(1.0, settings.refresh_seconds))
         refresh_event.clear()
         try:
-            update_state(state, settings, demo, logos, identities, routes)
+            update_state(state, settings, demo, logos, identities, routes, flags)
         except Exception as exc:
             with state.lock:
                 state.payload["mode"] = "error"
@@ -666,6 +770,11 @@ def handler_factory(state: FrameState, settings, refresh_event: threading.Event,
                 with state.lock: body, content_type = state.logo, state.logo_type
                 if body: self.send(HTTPStatus.OK, content_type, body, cache=True)
                 else: self.send(HTTPStatus.NOT_FOUND, "text/plain", b"No logo", cache=False)
+            elif path in {"/origin-flag", "/destination-flag"}:
+                with state.lock:
+                    body = state.origin_flag if path == "/origin-flag" else state.destination_flag
+                if body: self.send(HTTPStatus.OK, "image/svg+xml", body, cache=True)
+                else: self.send(HTTPStatus.NOT_FOUND, "text/plain", b"No flag", cache=False)
             elif path == "/beep-tone.mp3":
                 try:
                     body = tone_path.read_bytes()
@@ -698,8 +807,8 @@ def handler_factory(state: FrameState, settings, refresh_event: threading.Event,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config.json"); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8765); parser.add_argument("--demo", action="store_true"); parser.add_argument("--open", action="store_true", dest="open_browser")
-    args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); identities = AircraftIdentityStore(); routes = FlightRouteStore(); refresh_event = threading.Event(); update_state(state, settings, args.demo, logos, identities, routes)
-    threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos, identities, routes, refresh_event), daemon=True).start()
+    args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); identities = AircraftIdentityStore(); routes = FlightRouteStore(); flags = FlagStore(); refresh_event = threading.Event(); update_state(state, settings, args.demo, logos, identities, routes, flags)
+    threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos, identities, routes, flags, refresh_event), daemon=True).start()
     tone_path = Path(__file__).resolve().with_name("beep-tone.mp3")
     server = ThreadingHTTPServer((args.host, args.port), handler_factory(state, settings, refresh_event, tone_path)); url = f"http://{args.host}:{args.port}/"
     print(f"Over-Head monitor running at {url}"); print("Double-click the display to enter browser full-screen mode.")
