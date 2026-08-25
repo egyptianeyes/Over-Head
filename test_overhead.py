@@ -121,9 +121,11 @@ class OverHeadTests(unittest.TestCase):
         self.assertIn(b"N/A to N/A", PAGE)
         self.assertIn(b"route-unknown", PAGE)
 
-    def test_route_flags_sit_outside_airport_pair(self):
-        self.assertLess(PAGE.index(b"addFlag('origin'"), PAGE.index(b"origin.textContent"))
-        self.assertLess(PAGE.index(b"destination.textContent"), PAGE.index(b"addFlag('destination'"))
+    def test_route_flags_fill_airport_letters(self):
+        self.assertIn(b"background-clip:text", PAGE)
+        self.assertIn(b"airport('origin'", PAGE)
+        self.assertIn(b"airport('destination'", PAGE)
+        self.assertNotIn(b"addFlag(", PAGE)
         self.assertEqual(FlagStore._codepoints("GB"), "1f1ec-1f1e7")
 
     def test_radar_centres_aircraft_at_home(self):

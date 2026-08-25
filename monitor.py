@@ -520,7 +520,7 @@ PAGE = b"""<!doctype html>
     .flight-copy { min-width:0; }
     .callsign { overflow:visible; color:var(--white); font-size:clamp(64px,10.5vw,198px); font-weight:800; letter-spacing:-.065em; line-height:.88; white-space:nowrap; display:flex; align-items:center; gap:.12em; }
     .callsign.route-unknown { color:var(--muted); }
-    .route-flag { width:.62em; height:.62em; object-fit:contain; filter:drop-shadow(0 0 10px rgba(108,154,172,.2)); }
+    .route-airport.flag-fill { color:transparent; background-position:center; background-size:cover; background-repeat:no-repeat; background-clip:text; -webkit-background-clip:text; -webkit-text-fill-color:transparent; filter:drop-shadow(0 0 8px rgba(108,154,172,.16)); }
     .route-join { color:var(--muted); font-size:.45em; font-weight:650; letter-spacing:0; }
     .identity { margin-top:clamp(18px,2.2vh,34px); min-width:0; display:flex; flex-direction:column; gap:.24em; }
     .registration { color:var(--muted); font-size:clamp(22px,2.5vw,44px); font-weight:700; letter-spacing:.1em; }
@@ -532,8 +532,8 @@ PAGE = b"""<!doctype html>
     .logo-box img { display:none; max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; filter:drop-shadow(0 0 12px rgba(108,154,172,.15)); }
     .logo-box.wide img { transform:scale(1.7); }
     .logo-box.standard img { transform:scale(1.25); }
-    .logo-box.vector-wordmark { width:clamp(260px,21vw,410px); height:clamp(100px,14vh,180px); }
-    .logo-box.vector-wordmark img { transform:scale(3); }
+    .logo-box.vector-wordmark { width:clamp(220px,18vw,350px); height:clamp(90px,12vh,150px); }
+    .logo-box.vector-wordmark img { transform:scale(1.5); }
     .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
     .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
     .metric-label { color:var(--muted); font-size:clamp(11px,1vw,18px); font-weight:700; letter-spacing:.18em; }
@@ -611,12 +611,10 @@ PAGE = b"""<!doctype html>
       const heading=byId('callsign'); heading.replaceChildren(); const routeKnown=Boolean(d.route); heading.classList.toggle('route-unknown',hasAircraft&&!routeKnown);
       if(!hasAircraft){ heading.textContent='-'; return; }
       if(!routeKnown){ heading.textContent='N/A to N/A'; return; }
-      const addFlag=(side,available,revision)=>{ if(!available)return; const flag=document.createElement('img'); flag.className='route-flag'; flag.alt=''; flag.src='/'+side+'-flag?v='+encodeURIComponent(revision||''); heading.appendChild(flag); };
-      addFlag('origin',d.origin_flag_available,d.origin_flag_revision);
-      const origin=document.createElement('span'); origin.textContent=d.origin; heading.appendChild(origin);
+      const airport=(side,code,available,revision)=>{ const element=document.createElement('span'); element.className='route-airport'+(available?' flag-fill':''); element.textContent=code; if(available)element.style.backgroundImage='url(/'+side+'-flag?v='+encodeURIComponent(revision||'')+')'; heading.appendChild(element); };
+      airport('origin',d.origin,d.origin_flag_available,d.origin_flag_revision);
       const join=document.createElement('span'); join.className='route-join'; join.textContent='to'; heading.appendChild(join);
-      const destination=document.createElement('span'); destination.textContent=d.destination; heading.appendChild(destination);
-      addFlag('destination',d.destination_flag_available,d.destination_flag_revision);
+      airport('destination',d.destination,d.destination_flag_available,d.destination_flag_revision);
     }
     function updateSoundButton(){ const button=byId('sound-toggle'); button.classList.toggle('muted',!soundEnabled); button.classList.toggle('blocked',audioBlocked&&soundEnabled); button.setAttribute('aria-pressed',String(soundEnabled)); button.setAttribute('aria-label',!soundEnabled?'Enable aircraft change sound':audioBlocked?'Enable aircraft sound':'Mute aircraft change sound'); }
     async function playTone(){ if(!soundEnabled)return; const tone=byId('alert-tone'); try{ tone.currentTime=0; await tone.play(); audioBlocked=false; }catch(_){ audioBlocked=true; } updateSoundButton(); }

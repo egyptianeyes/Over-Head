@@ -41,8 +41,9 @@ the IATA airport pair, such as `LHR to LAX`, and the flight number moves to the
 identity line beside the registration. Routes are cached for six hours in
 `cache/flight-routes.json`. When no verified route is available, the heading
 shows a muted `N/A to N/A` placeholder and the flight number or registration
-stays on the identity line below. Known routes show cached Twemoji SVG flags
-outside the airport pair, for example `[UK] LHR to LAX [US]`. Neither ADSB.lol nor ADSBDB supplies trustworthy
+stays on the identity line below. Known routes use the cached Twemoji SVG flags
+as the colour fill inside each airport code, with a muted lowercase `to` between
+them. Neither ADSB.lol nor ADSBDB supplies trustworthy
 departure, arrival, or remaining-flight times, so Over-Head does not invent or
 estimate them. If no airline artwork is available, the logo area remains empty.
 
