@@ -40,6 +40,7 @@ class OverHeadTests(unittest.TestCase):
         self.assertEqual(aircraft_name("B762"), "BOEING 767-200")
         self.assertEqual(aircraft_name("B764"), "BOEING 767-400ER")
         self.assertEqual(aircraft_name("B76F"), "BOEING 767 FREIGHTER")
+        self.assertEqual(aircraft_name("CL60"), "BOMBARDIER CHALLENGER 600 SERIES")
 
     def test_svg_safety_filter(self):
         self.assertIsNotNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'))
