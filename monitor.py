@@ -21,7 +21,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree
 
-from overhead import fetch_traffic_snapshot, load_settings, render, save_frame, select_nearest
+from overhead import DEMO, fetch_aircraft, load_settings, render, save_frame, select_nearest
 
 
 SOARING_INDEX_URL = (
@@ -361,6 +361,7 @@ PAGE = b"""<!doctype html>
     .live-dot { width:.62em; height:.62em; border-radius:50%; background:var(--cyan); box-shadow:0 0 1em var(--cyan); }
     .live.demo .live-dot { background:var(--amber); box-shadow:0 0 1em var(--amber); }
     .live.error .live-dot { background:var(--red); box-shadow:0 0 1em var(--red); }
+    .live.reconnecting .live-dot { background:var(--amber); box-shadow:0 0 1em var(--amber); }
     .content { min-height:0; display:grid; grid-template-columns:minmax(0,1fr); gap:clamp(14px,1.3vw,24px); }
     .wall.radar-open .content { grid-template-columns:minmax(0,1fr) clamp(320px,29vw,560px); }
     main { min-height:0; border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.72); display:grid; grid-template-columns:1fr; overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.34); }
@@ -376,6 +377,8 @@ PAGE = b"""<!doctype html>
     .logo-box.square { width:clamp(110px,10vw,180px); height:clamp(110px,12vh,180px); }
     .logo-box.tall { width:clamp(100px,9vw,160px); height:clamp(125px,16vh,205px); }
     .logo-box img { display:none; max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; filter:drop-shadow(0 0 12px rgba(108,154,172,.15)); }
+    .logo-box.wide img { transform:scale(1.7); }
+    .logo-box.standard img { transform:scale(1.25); }
     .operator-badge { color:var(--cyan); font-size:clamp(24px,2.5vw,44px); font-weight:850; letter-spacing:.08em; }
     .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
     .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
@@ -502,6 +505,7 @@ class FrameState:
         self.png = b""
         self.logo = b""
         self.logo_type = "image/svg+xml"
+        self.last_live_aircraft: list[dict[str, Any]] = []
         self.payload: dict[str, Any] = {"mode": "starting", "updated": "never", "total": 0}
 
     def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, aircraft: list[dict[str, Any]], settings, logo: tuple[bytes, str, str] | None, identity: dict[str, str] | None = None) -> None:
@@ -536,7 +540,18 @@ class FrameState:
 
 
 def update_state(state: FrameState, settings, demo: bool, logos: LogoStore, identities: AircraftIdentityStore) -> None:
-    aircraft, mode = fetch_traffic_snapshot(settings, demo=demo)
+    if demo:
+        aircraft, mode = DEMO["ac"], "demo"
+    else:
+        try:
+            aircraft, mode = fetch_aircraft(settings), "live"
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError, TimeoutError):
+            with state.lock:
+                aircraft = list(state.last_live_aircraft)
+            mode = "reconnecting"
+        else:
+            with state.lock:
+                state.last_live_aircraft = list(aircraft)
     plane, distance = select_nearest(aircraft, settings)
     identity = {} if demo else identities.get(plane)
     image = render(plane, distance, mode)

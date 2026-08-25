@@ -34,7 +34,7 @@ class Settings:
     refresh_seconds: float = 10.0
     output_rgb: str = "output/frame.rgb"
     output_png: str = "output/frame.png"
-    demo_on_failure: bool = True
+    demo_on_failure: bool = False
 
 
 DEMO = {

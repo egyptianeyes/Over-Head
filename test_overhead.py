@@ -1,8 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from monitor import AircraftIdentityStore, RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg
+from monitor import AircraftIdentityStore, FrameState, RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg, update_state
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -68,6 +69,25 @@ class OverHeadTests(unittest.TestCase):
             second = StubStore(cache)
             self.assertEqual(second.get({"hex": "a1c25f"}), identity)
             self.assertEqual(second.calls, 0)
+
+    def test_monitor_retains_last_live_aircraft_during_outage(self):
+        class EmptyStore:
+            def get(self, value):
+                return None if isinstance(value, str) else {}
+
+        plane = dict(DEMO["ac"][0])
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(
+                output_rgb=str(Path(tmp) / "frame.rgb"),
+                output_png=str(Path(tmp) / "frame.png"),
+            )
+            state = FrameState()
+            with patch("monitor.fetch_aircraft", side_effect=[[plane], OSError("offline")]):
+                update_state(state, settings, False, EmptyStore(), EmptyStore())
+                self.assertEqual(state.payload["mode"], "live")
+                update_state(state, settings, False, EmptyStore(), EmptyStore())
+            self.assertEqual(state.payload["mode"], "reconnecting")
+            self.assertEqual(state.payload["aircraft_id"], aircraft_identity(plane))
 
     def test_radar_centres_aircraft_at_home(self):
         settings = Settings(latitude=51.5, longitude=-3.3, radius_nm=25)
