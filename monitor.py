@@ -41,6 +41,10 @@ USER_AGENT = "Over-Head/0.2 (+personal wall display)"
 MAX_LOGO_BYTES = 1_000_000
 RADAR_RANGES = (5, 10, 15, 25, 40, 60, 100)
 
+PRECISE_MODEL_NAMES = {
+    ("BOMBARDIER", "CHALLENGER 650"): "BOMBARDIER CL-600-2B16 CHALLENGER 650",
+}
+
 AIRCRAFT_NAMES = {
     "A306": "AIRBUS A300-600", "A319": "AIRBUS A319", "A320": "AIRBUS A320",
     "A321": "AIRBUS A321", "A20N": "AIRBUS A320NEO", "A21N": "AIRBUS A321NEO",
@@ -239,6 +243,96 @@ class LogoStore:
             return None
 
 
+class AircraftIdentityStore:
+    """Enrich tracked aircraft once and retain successful identities on disk."""
+
+    def __init__(self, cache_path: Path = Path("cache/aircraft-identities.json")) -> None:
+        self.cache_path = cache_path
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._unavailable: set[str] = set()
+        try:
+            loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+            self._records = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            self._records: dict[str, dict[str, str]] = {}
+
+    @staticmethod
+    def _keys(plane: dict[str, Any]) -> list[str]:
+        keys = []
+        registration = re.sub(r"[^A-Z0-9]", "", str(plane.get("r") or "").upper())
+        mode_s = re.sub(r"[^A-F0-9]", "", str(plane.get("hex") or "").upper())
+        if registration:
+            keys.append(f"registration:{registration}")
+        if mode_s:
+            keys.append(f"mode_s:{mode_s}")
+        return keys
+
+    def _fetch(self, identifier: str) -> dict[str, Any]:
+        url = f"https://api.adsbdb.com/v0/aircraft/{identifier}"
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=6) as response:
+            payload = json.load(response)
+        aircraft = payload.get("response", {}).get("aircraft", {})
+        return aircraft if isinstance(aircraft, dict) else {}
+
+    @staticmethod
+    def _normalise(record: dict[str, Any]) -> dict[str, str]:
+        manufacturer = str(record.get("manufacturer") or "").strip()
+        model = str(record.get("type") or "").strip()
+        precise_name = PRECISE_MODEL_NAMES.get((manufacturer.upper(), model.upper()))
+        if precise_name:
+            name = precise_name
+        elif manufacturer and model and not model.casefold().startswith(manufacturer.casefold()):
+            name = f"{manufacturer} {model}"
+        else:
+            name = model or manufacturer
+        return {
+            "aircraft_name": name.upper(),
+            "aircraft_type": str(record.get("icao_type") or "").strip().upper(),
+            "registration": str(record.get("registration") or "").strip().upper(),
+            "airline_name": str(record.get("registered_owner") or "").strip(),
+            "operator_code": str(record.get("registered_owner_operator_flag_code") or "").strip().upper(),
+            "mode_s": str(record.get("mode_s") or "").strip().upper(),
+        }
+
+    def _save(self) -> None:
+        temporary = self.cache_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self._records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(self.cache_path)
+
+    def get(self, plane: dict[str, Any] | None) -> dict[str, str]:
+        if not plane:
+            return {}
+        keys = self._keys(plane)
+        with self._lock:
+            for key in keys:
+                cached = self._records.get(key)
+                if isinstance(cached, dict):
+                    return cached
+            lookup_key = keys[0] if keys else ""
+            if not lookup_key or lookup_key in self._unavailable:
+                return {}
+            identifier = lookup_key.split(":", 1)[1]
+            try:
+                result = self._normalise(self._fetch(identifier))
+            except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError, TimeoutError):
+                self._unavailable.add(lookup_key)
+                return {}
+            if not any(result.values()):
+                self._unavailable.add(lookup_key)
+                return {}
+            cache_keys = set(keys)
+            if result["registration"]:
+                cache_keys.add(f"registration:{re.sub(r'[^A-Z0-9]', '', result['registration'])}")
+            if result["mode_s"]:
+                cache_keys.add(f"mode_s:{re.sub(r'[^A-F0-9]', '', result['mode_s'])}")
+            for key in cache_keys:
+                self._records[key] = result
+            self._save()
+            return result
+
+
 PAGE = b"""<!doctype html>
 <html lang="en">
 <head>
@@ -382,7 +476,7 @@ PAGE = b"""<!doctype html>
         const hasAircraft=Boolean(d.aircraft_id); byId('wall').classList.toggle('no-aircraft',!hasAircraft); byId('callsign').textContent=hasAircraft?(d.callsign||d.registration||d.aircraft_id):'-';
         if(d.aircraft_id&&d.aircraft_id!==trackedAircraftId){ trackedAircraftId=d.aircraft_id; playTone(); } else if(!d.aircraft_id){ trackedAircraftId=''; }
         byId('registration').textContent=d.registration||'REGISTRATION UNKNOWN'; byId('aircraft-name').textContent=d.aircraft_name+(d.aircraft_type?'  \\u00b7  '+d.aircraft_type:'');
-        const logo=byId('operator-logo'),badge=byId('operator-badge'),logoBox=byId('logo-box'); badge.textContent=d.operator_code||'-';
+        const logo=byId('operator-logo'),badge=byId('operator-badge'),logoBox=byId('logo-box'); badge.textContent=d.airline_name||d.operator_code||'-';
         if(d.logo_available){ logo.onload=()=>{ const ratio=logo.naturalWidth&&logo.naturalHeight?logo.naturalWidth/logo.naturalHeight:2; const shape=ratio>2.2?'wide':ratio<.8?'tall':ratio<1.25?'square':'standard'; logoBox.className='logo-box '+shape; logo.style.display='block'; badge.style.display='none'; }; logo.onerror=()=>{logoBox.className='logo-box square';logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
         else { logo.removeAttribute('src'); logoBox.className='logo-box square'; logo.style.display='none'; badge.style.display='block'; }
         byId('altitude').textContent=altitude(d.altitude); byId('speed').textContent=d.speed==null?'--':Math.round(d.speed)+' KT'; byId('vertical').textContent=vertical(d.vertical_rate);
@@ -410,11 +504,12 @@ class FrameState:
         self.logo_type = "image/svg+xml"
         self.payload: dict[str, Any] = {"mode": "starting", "updated": "never", "total": 0}
 
-    def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, aircraft: list[dict[str, Any]], settings, logo: tuple[bytes, str, str] | None) -> None:
+    def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, aircraft: list[dict[str, Any]], settings, logo: tuple[bytes, str, str] | None, identity: dict[str, str] | None = None) -> None:
         data = BytesIO()
         image.save(data, format="PNG")
         plane = plane or {}
-        code = operator_code(plane)
+        identity = identity or {}
+        code = identity.get("operator_code") or operator_code(plane)
         logo_data, logo_type, logo_source = logo or (b"", "", "")
         payload = {
             "mode": mode,
@@ -422,12 +517,12 @@ class FrameState:
             "total": len(aircraft),
             "aircraft_id": aircraft_identity(plane),
             "callsign": str(plane.get("flight") or "").strip(),
-            "registration": str(plane.get("r") or "").strip(),
-            "aircraft_type": str(plane.get("t") or "").strip(),
-            "aircraft_name": aircraft_name(plane.get("t"), plane.get("desc")),
+            "registration": identity.get("registration") or str(plane.get("r") or "").strip(),
+            "aircraft_type": str(plane.get("t") or "").strip() or identity.get("aircraft_type", ""),
+            "aircraft_name": identity.get("aircraft_name") or aircraft_name(plane.get("t"), plane.get("desc")),
             "altitude": plane.get("alt_baro"), "speed": plane.get("gs"), "vertical_rate": plane.get("baro_rate"),
             "track": plane.get("track") or 0, "distance_nm": distance, "squawk": plane.get("squawk"), "emergency": plane.get("emergency"),
-            "operator_code": code, "airline_name": "", "logo_available": bool(logo_data),
+            "operator_code": code, "airline_name": identity.get("airline_name", ""), "logo_available": bool(logo_data),
             "logo_source": logo_source,
             "logo_revision": f"{code}-{hashlib.sha256(logo_data).hexdigest()[:12]}" if logo_data else code,
             "radar_radius_nm": settings.radius_nm,
@@ -440,20 +535,22 @@ class FrameState:
             self.payload = payload
 
 
-def update_state(state: FrameState, settings, demo: bool, logos: LogoStore) -> None:
+def update_state(state: FrameState, settings, demo: bool, logos: LogoStore, identities: AircraftIdentityStore) -> None:
     aircraft, mode = fetch_traffic_snapshot(settings, demo=demo)
     plane, distance = select_nearest(aircraft, settings)
+    identity = {} if demo else identities.get(plane)
     image = render(plane, distance, mode)
     save_frame(image, settings)
-    state.update(image, mode, plane, distance, aircraft, settings, logos.get(operator_code(plane)))
+    code = identity.get("operator_code") or operator_code(plane)
+    state.update(image, mode, plane, distance, aircraft, settings, logos.get(code), identity)
 
 
-def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore, refresh_event: threading.Event) -> None:
+def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore, identities: AircraftIdentityStore, refresh_event: threading.Event) -> None:
     while True:
         refresh_event.wait(timeout=max(1.0, settings.refresh_seconds))
         refresh_event.clear()
         try:
-            update_state(state, settings, demo, logos)
+            update_state(state, settings, demo, logos, identities)
         except Exception as exc:
             with state.lock:
                 state.payload["mode"] = "error"
@@ -509,8 +606,8 @@ def handler_factory(state: FrameState, settings, refresh_event: threading.Event,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config.json"); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8765); parser.add_argument("--demo", action="store_true"); parser.add_argument("--open", action="store_true", dest="open_browser")
-    args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); refresh_event = threading.Event(); update_state(state, settings, args.demo, logos)
-    threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos, refresh_event), daemon=True).start()
+    args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); identities = AircraftIdentityStore(); refresh_event = threading.Event(); update_state(state, settings, args.demo, logos, identities)
+    threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos, identities, refresh_event), daemon=True).start()
     tone_path = Path(__file__).resolve().with_name("beep-tone.mp3")
     server = ThreadingHTTPServer((args.host, args.port), handler_factory(state, settings, refresh_event, tone_path)); url = f"http://{args.host}:{args.port}/"
     print(f"Over-Head monitor running at {url}"); print("Double-click the display to enter browser full-screen mode.")

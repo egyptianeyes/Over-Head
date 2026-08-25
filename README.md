@@ -28,7 +28,12 @@ without repeating its callsign, while other visible contacts retain labels when
 the radar is not crowded.
 
 Common ICAO aircraft type designators are expanded into readable manufacturer
-and model names, for example `B738` becomes `BOEING 737-800`.
+and model names, for example `B738` becomes `BOEING 737-800`. For the selected
+aircraft, Over-Head also queries ADSBDB by registration or Mode-S address to
+obtain a more precise model, registered operator, and operator code. Every
+successful result is stored in `cache/aircraft-identities.json` and reused on
+future sightings. If ADSBDB is unavailable or has no matching record, the live
+ADSB.lol fields and built-in ICAO type-name table remain the fallback.
 
 Place `beep-tone.mp3` in the repository root beside `monitor.py`. Sound is on by
 default and plays when tracking starts or the nearest selected aircraft changes.
@@ -143,6 +148,11 @@ LED aircraft information display created by AxisNimble.
 Live aircraft position data is provided by the
 [ADSB.lol](https://adsb.lol/) community ADS-B network.
 
+Aircraft identity and registered-operator enrichment is provided by the
+open-source [ADSBDB](https://www.adsbdb.com/) project. Successful lookups are
+cached locally so previously identified aircraft do not depend on continued
+API availability.
+
 Airline artwork is retrieved, when available, from
 [Soaring Symbols](https://github.com/soaring-symbols/soaring-symbols) with a
 fallback to the
@@ -152,7 +162,7 @@ They are displayed for aircraft identification and are not covered by
 Over-Head's MIT licence.
 
 Over-Head is an independent project and is not affiliated with or endorsed by
-TheFlightWall, ADSB.lol, Soaring Symbols, Jxck-S, or any airline.
+TheFlightWall, ADSB.lol, ADSBDB, Soaring Symbols, Jxck-S, or any airline.
 
 ### Sound effect
 

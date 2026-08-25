@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from monitor import RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg
+from monitor import AircraftIdentityStore, RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -45,6 +45,29 @@ class OverHeadTests(unittest.TestCase):
     def test_svg_safety_filter(self):
         self.assertIsNotNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'))
         self.assertIsNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>'))
+
+    def test_enrichment_is_persisted_and_reused(self):
+        class StubStore(AircraftIdentityStore):
+            calls = 0
+
+            def _fetch(self, identifier):
+                self.calls += 1
+                return {
+                    "type": "Challenger 650", "icao_type": "CL65", "manufacturer": "Bombardier",
+                    "mode_s": "A1C25F", "registration": "N212QS",
+                    "registered_owner_operator_flag_code": "EJA", "registered_owner": "NetJets",
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "aircraft-identities.json"
+            first = StubStore(cache)
+            identity = first.get({"hex": "a1c25f", "r": "N212QS", "t": "CL60"})
+            self.assertEqual(identity["aircraft_name"], "BOMBARDIER CL-600-2B16 CHALLENGER 650")
+            self.assertEqual(identity["airline_name"], "NetJets")
+            self.assertEqual(first.calls, 1)
+            second = StubStore(cache)
+            self.assertEqual(second.get({"hex": "a1c25f"}), identity)
+            self.assertEqual(second.calls, 0)
 
     def test_radar_centres_aircraft_at_home(self):
         settings = Settings(latitude=51.5, longitude=-3.3, radius_nm=25)
