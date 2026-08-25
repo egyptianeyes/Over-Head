@@ -224,6 +224,7 @@ PAGE = b"""<!doctype html>
     .operator-badge { color:#09212b; font-size:clamp(24px,2.5vw,44px); font-weight:850; letter-spacing:.08em; }
     .identity { min-width:0; color:var(--muted); font-size:clamp(22px,3.1vw,54px); font-weight:650; letter-spacing:.08em; }
     .metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
+    .metric-distance { display:none; }
     .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
     .metric-label { color:var(--muted); font-size:clamp(11px,1vw,18px); font-weight:700; letter-spacing:.18em; }
     .metric-value { margin-top:.18em; color:var(--white); font-size:clamp(27px,3.5vw,64px); font-weight:750; letter-spacing:-.035em; white-space:nowrap; }
@@ -253,8 +254,14 @@ PAGE = b"""<!doctype html>
     .contact path { fill:currentColor; }
     .contact text { fill:currentColor; font:700 3.2px "Segoe UI",sans-serif; letter-spacing:.02em; }
     .radar-foot { display:flex; justify-content:space-between; }
+    .wall.radar-open main { grid-template-columns:1fr; }
+    .wall.radar-open .aircraft-panel { display:none; }
+    .wall.radar-open .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .wall.radar-open .metric-distance { display:block; }
+    .wall.radar-open .metric-value { font-size:clamp(26px,2.75vw,52px); }
+    .wall.radar-open .callsign { font-size:clamp(64px,9vw,168px); }
     footer { color:#52717e; font:600 clamp(11px,.9vw,16px)/1.2 "Segoe UI",sans-serif; letter-spacing:.1em; }
-    @media (max-width:1150px) { .wall.radar-open .content { grid-template-columns:minmax(0,1fr) minmax(280px,36vw); } .wall.radar-open .aircraft-panel { display:none; } .wall.radar-open main { grid-template-columns:1fr; } }
+    @media (max-width:1150px) { .wall.radar-open .content { grid-template-columns:minmax(0,1fr) minmax(280px,36vw); } .wall.radar-open .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-aspect-ratio:4/3) { main { grid-template-columns:1fr; grid-template-rows:1fr .8fr; } .aircraft-panel { border-left:0; border-top:1px solid var(--line); } .callsign { font-size:clamp(56px,15vw,130px); } }
   </style>
 </head>
@@ -269,6 +276,7 @@ PAGE = b"""<!doctype html>
           <div class="metric"><div class="metric-label">ALTITUDE</div><div class="metric-value" id="altitude">--</div></div>
           <div class="metric"><div class="metric-label">GROUND SPEED</div><div class="metric-value" id="speed">--</div></div>
           <div class="metric"><div class="metric-label">VERTICAL</div><div class="metric-value" id="vertical">--</div></div>
+          <div class="metric metric-distance"><div class="metric-label">DISTANCE</div><div class="metric-value"><span id="distance-main">--</span> NM</div></div>
         </div>
       </section>
       <section class="aircraft-panel">
@@ -316,7 +324,7 @@ PAGE = b"""<!doctype html>
         if(d.logo_available){ logo.onload=()=>{logo.style.display='block';badge.style.display='none'}; logo.onerror=()=>{logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
         else { logo.removeAttribute('src'); logo.style.display='none'; badge.style.display='block'; }
         byId('altitude').textContent=altitude(d.altitude); byId('speed').textContent=d.speed==null?'--':Math.round(d.speed)+' KT'; byId('vertical').textContent=vertical(d.vertical_rate);
-        byId('distance').textContent=number(d.distance_nm,1); byId('plane').style.transform='rotate('+number(d.track,0)+'deg)';
+        byId('distance').textContent=number(d.distance_nm,1); byId('distance-main').textContent=number(d.distance_nm,1); byId('plane').style.transform='rotate('+number(d.track,0)+'deg)';
         drawRadar(d.radar_contacts,d.radar_radius_nm);
         byId('footer-status').textContent=d.total+' CONTACTS  /  UPDATED '+d.updated;
       }catch(_){ byId('live').className='live error'; byId('mode').textContent='RECONNECTING'; }
