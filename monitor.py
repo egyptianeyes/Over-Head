@@ -82,6 +82,17 @@ def operator_code(plane: dict[str, Any] | None) -> str:
     return callsign[:3]
 
 
+def aircraft_identity(plane: dict[str, Any] | None) -> str:
+    """Return a stable identity used to detect a change of tracked aircraft."""
+    if not plane:
+        return ""
+    for field in ("hex", "r", "flight"):
+        value = re.sub(r"[^A-Z0-9]", "", str(plane.get(field) or "").upper())
+        if value:
+            return value
+    return ""
+
+
 def safe_svg(data: bytes) -> bytes | None:
     """Reject active or externally-referencing SVG content before serving it."""
     if len(data) > MAX_LOGO_BYTES:
@@ -241,6 +252,13 @@ PAGE = b"""<!doctype html>
     .header-tools { display:flex; align-items:center; gap:clamp(14px,1.5vw,28px); }
     .radar-toggle { cursor:pointer; border:1px solid var(--line); border-radius:999px; padding:.62em 1.05em; background:rgba(20,236,255,.055); color:var(--muted); font:750 clamp(11px,1vw,18px)/1 "Segoe UI",sans-serif; letter-spacing:.14em; }
     .radar-toggle:hover,.radar-toggle:focus-visible,.wall.radar-open .radar-toggle { color:var(--cyan); border-color:rgba(20,236,255,.48); outline:none; }
+    .sound-toggle { width:clamp(38px,2.7vw,50px); height:clamp(38px,2.7vw,50px); padding:9px; display:grid; place-items:center; cursor:pointer; border:1px solid var(--line); border-radius:50%; background:rgba(20,236,255,.055); color:var(--cyan); }
+    .sound-toggle:hover,.sound-toggle:focus-visible { border-color:var(--cyan); background:rgba(20,236,255,.12); outline:none; }
+    .sound-toggle svg { width:100%; height:100%; }
+    .sound-toggle .mute-slash { display:none; }
+    .sound-toggle.muted { color:var(--muted); }
+    .sound-toggle.muted .mute-slash { display:block; }
+    .sound-toggle.blocked { color:var(--amber); border-color:rgba(255,176,32,.65); }
     .brand { color:var(--cyan); font-size:clamp(30px,4.2vw,78px); font-weight:800; letter-spacing:-.055em; line-height:1; }
     .live { display:flex; align-items:center; gap:.7em; color:var(--muted); font-size:clamp(14px,1.45vw,26px); font-weight:700; letter-spacing:.16em; }
     .live-dot { width:.62em; height:.62em; border-radius:50%; background:var(--cyan); box-shadow:0 0 1em var(--cyan); }
@@ -293,7 +311,7 @@ PAGE = b"""<!doctype html>
 </head>
 <body>
   <section class="wall" id="wall">
-    <header><div class="brand">OVER-HEAD</div><div class="header-tools"><button class="radar-toggle" id="radar-toggle" type="button" aria-pressed="false">RADAR</button><div class="live" id="live"><span class="live-dot"></span><span id="mode">STARTING</span></div></div></header>
+    <header><div class="brand">OVER-HEAD</div><div class="header-tools"><button class="sound-toggle" id="sound-toggle" type="button" aria-label="Mute aircraft change sound" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6m-5 2h4M6.5 16.5h11c-1.6-1.7-2.2-3.5-2.2-6.2A3.3 3.3 0 0 0 12 7a3.3 3.3 0 0 0-3.3 3.3c0 2.7-.6 4.5-2.2 6.2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path class="mute-slash" d="M4 4l16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button><button class="radar-toggle" id="radar-toggle" type="button" aria-pressed="false">RADAR</button><div class="live" id="live"><span class="live-dot"></span><span id="mode">STARTING</span></div></div></header>
     <div class="content">
     <main>
       <section class="information">
@@ -318,13 +336,17 @@ PAGE = b"""<!doctype html>
     </div>
     <footer><span>SOURCE: ADSB.LOL</span><span id="footer-status">CONNECTING</span></footer>
   </section>
+  <audio id="alert-tone" preload="auto" src="/beep-tone.mp3"></audio>
   <script>
     const byId=id=>document.getElementById(id);
     const svgNS='http://www.w3.org/2000/svg';
     const radarRanges=[5,10,15,25,40,60,100]; let currentRadarRange=25;
+    let soundEnabled=localStorage.getItem('overhead-sound')!=='muted'; let audioBlocked=false; let trackedAircraftId='';
     const number=(value,digits=0)=>value==null?'--':Number(value).toFixed(digits);
     const altitude=value=>typeof value==='number'?Math.round(value).toLocaleString()+' FT':String(value||'--').toUpperCase();
     function vertical(value){ if(typeof value!=='number')return 'LEVEL'; if(value>150)return '\\u2191 '+Math.abs(Math.round(value)).toLocaleString(); if(value<-150)return '\\u2193 '+Math.abs(Math.round(value)).toLocaleString(); return 'LEVEL'; }
+    function updateSoundButton(){ const button=byId('sound-toggle'); button.classList.toggle('muted',!soundEnabled); button.classList.toggle('blocked',audioBlocked&&soundEnabled); button.setAttribute('aria-pressed',String(soundEnabled)); button.setAttribute('aria-label',!soundEnabled?'Enable aircraft change sound':audioBlocked?'Enable aircraft sound':'Mute aircraft change sound'); }
+    async function playTone(){ if(!soundEnabled)return; const tone=byId('alert-tone'); try{ tone.currentTime=0; await tone.play(); audioBlocked=false; }catch(_){ audioBlocked=true; } updateSoundButton(); }
     function drawRadar(contacts,radius){
       const layer=byId('radar-contacts'); layer.replaceChildren();
       for(const c of contacts||[]){
@@ -348,6 +370,7 @@ PAGE = b"""<!doctype html>
         const response=await fetch('/status?t='+Date.now(),{cache:'no-store'}); if(!response.ok)throw new Error('status'); const d=await response.json();
         const mode=String(d.mode||'live').toLowerCase(); byId('live').className='live '+mode; byId('mode').textContent=mode.toUpperCase();
         byId('callsign').textContent=d.callsign||d.registration||'NO AIRCRAFT';
+        if(d.aircraft_id&&d.aircraft_id!==trackedAircraftId){ trackedAircraftId=d.aircraft_id; playTone(); } else if(!d.aircraft_id){ trackedAircraftId=''; }
         byId('registration').textContent=d.registration||'REGISTRATION UNKNOWN'; byId('aircraft-name').textContent=d.aircraft_name+(d.aircraft_type?'  \\u00b7  '+d.aircraft_type:'');
         const logo=byId('operator-logo'),badge=byId('operator-badge'); badge.textContent=d.operator_code||'---';
         if(d.logo_available){ logo.onload=()=>{logo.style.display='block';badge.style.display='none'}; logo.onerror=()=>{logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
@@ -359,6 +382,7 @@ PAGE = b"""<!doctype html>
       }catch(_){ byId('live').className='live error'; byId('mode').textContent='RECONNECTING'; }
     }
     setRadar(localStorage.getItem('overhead-radar')==='open'); byId('radar-toggle').addEventListener('click',()=>setRadar(!byId('wall').classList.contains('radar-open'))); document.addEventListener('keydown',event=>{if(event.key.toLowerCase()==='r')setRadar(!byId('wall').classList.contains('radar-open'))});
+    updateSoundButton(); byId('sound-toggle').addEventListener('click',()=>{ if(audioBlocked&&soundEnabled){ playTone(); return; } soundEnabled=!soundEnabled; audioBlocked=false; localStorage.setItem('overhead-sound',soundEnabled?'on':'muted'); updateSoundButton(); });
     byId('zoom-in').addEventListener('click',()=>changeRadarRange(-1)); byId('zoom-out').addEventListener('click',()=>changeRadarRange(1));
     const savedRange=Number(localStorage.getItem('overhead-radar-range')); if(radarRanges.includes(savedRange)&&savedRange!==25){ currentRadarRange=savedRange; fetch('/radar-range?radius='+savedRange,{cache:'no-store'}); }
     setInterval(update,2000); update(); document.addEventListener('dblclick',()=>document.documentElement.requestFullscreen?.());
@@ -386,6 +410,7 @@ class FrameState:
             "mode": mode,
             "updated": time.strftime("%H:%M:%S"),
             "total": len(aircraft),
+            "aircraft_id": aircraft_identity(plane),
             "callsign": str(plane.get("flight") or "").strip(),
             "registration": str(plane.get("r") or "").strip(),
             "aircraft_type": str(plane.get("t") or "").strip(),
@@ -426,7 +451,7 @@ def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore, refr
                 state.payload["error"] = type(exc).__name__
 
 
-def handler_factory(state: FrameState, settings, refresh_event: threading.Event):
+def handler_factory(state: FrameState, settings, refresh_event: threading.Event, tone_path: Path):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             request_url = urlsplit(self.path)
@@ -442,6 +467,13 @@ def handler_factory(state: FrameState, settings, refresh_event: threading.Event)
                 with state.lock: body, content_type = state.logo, state.logo_type
                 if body: self.send(HTTPStatus.OK, content_type, body, cache=True)
                 else: self.send(HTTPStatus.NOT_FOUND, "text/plain", b"No logo", cache=False)
+            elif path == "/beep-tone.mp3":
+                try:
+                    body = tone_path.read_bytes()
+                except OSError:
+                    self.send(HTTPStatus.NOT_FOUND, "text/plain", b"beep-tone.mp3 not found", cache=False)
+                else:
+                    self.send(HTTPStatus.OK, "audio/mpeg", body, cache=True)
             elif path == "/radar-range":
                 try:
                     radius = int(parse_qs(request_url.query).get("radius", [""])[0])
@@ -469,7 +501,8 @@ def main() -> int:
     parser.add_argument("--config", default="config.json"); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8765); parser.add_argument("--demo", action="store_true"); parser.add_argument("--open", action="store_true", dest="open_browser")
     args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); refresh_event = threading.Event(); update_state(state, settings, args.demo, logos)
     threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos, refresh_event), daemon=True).start()
-    server = ThreadingHTTPServer((args.host, args.port), handler_factory(state, settings, refresh_event)); url = f"http://{args.host}:{args.port}/"
+    tone_path = Path(__file__).resolve().with_name("beep-tone.mp3")
+    server = ThreadingHTTPServer((args.host, args.port), handler_factory(state, settings, refresh_event, tone_path)); url = f"http://{args.host}:{args.port}/"
     print(f"Over-Head monitor running at {url}"); print("Double-click the display to enter browser full-screen mode.")
     if args.open_browser: webbrowser.open(url)
     try: server.serve_forever()

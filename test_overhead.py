@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from monitor import RADAR_RANGES, aircraft_name, operator_code, radar_contacts, safe_svg
+from monitor import RADAR_RANGES, aircraft_identity, aircraft_name, operator_code, radar_contacts, safe_svg
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -27,6 +27,11 @@ class OverHeadTests(unittest.TestCase):
     def test_operator_code_ignores_registration_callsigns(self):
         self.assertEqual(operator_code({"flight": "RYR6432", "r": "SP-RZX"}), "RYR")
         self.assertEqual(operator_code({"flight": "GBNZB", "r": "G-BNZB"}), "")
+
+    def test_aircraft_identity_prefers_hex_code(self):
+        plane = {"hex": "4ca259", "r": "EI-DHD", "flight": "RYR701"}
+        self.assertEqual(aircraft_identity(plane), "4CA259")
+        self.assertEqual(aircraft_identity({"r": "G-BNZB"}), "GBNZB")
 
     def test_expands_common_aircraft_models(self):
         self.assertEqual(aircraft_name("B738"), "BOEING 737-800")

@@ -30,6 +30,11 @@ the radar is not crowded.
 Common ICAO aircraft type designators are expanded into readable manufacturer
 and model names, for example `B738` becomes `BOEING 737-800`.
 
+Place `beep-tone.mp3` in the repository root beside `monitor.py`. Sound is on by
+default and plays when tracking starts or the nearest selected aircraft changes.
+Use the bell in the header to mute or restore it; the choice is remembered. A
+browser may block the very first automatic sound until the bell is pressed once.
+
 ## Install
 
 Python 3.10 or later is recommended.
@@ -148,6 +153,13 @@ Over-Head's MIT licence.
 
 Over-Head is an independent project and is not affiliated with or endorsed by
 TheFlightWall, ADSB.lol, Soaring Symbols, Jxck-S, or any airline.
+
+### Sound effect
+
+`beep-tone.mp3` was created by arunangshubanerjee and sourced from
+[Pixabay](https://pixabay.com/) under the
+[Pixabay Content License](https://pixabay.com/service/terms/). The sound effect
+is not covered by Over-Head's MIT License.
 
 ## License
 
