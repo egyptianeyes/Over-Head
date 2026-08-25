@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render nearby Airplanes.live traffic to a 128x64 RGB888 framebuffer."""
+"""Render nearby ADSB.lol traffic to a 128x64 RGB888 framebuffer."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def load_settings(path: Path) -> Settings:
 
 def fetch_aircraft(settings: Settings) -> list[dict[str, Any]]:
     url = (
-        "https://api.airplanes.live/v2/point/"
+        "https://api.adsb.lol/v2/point/"
         f"{settings.latitude}/{settings.longitude}/{settings.radius_nm}"
     )
     request = urllib.request.Request(
@@ -186,7 +186,9 @@ def save_frame(image: Image.Image, settings: Settings) -> None:
     rgb_path.write_bytes(image.tobytes("raw", "RGB"))
 
 
-def produce_frame(settings: Settings, demo: bool = False) -> tuple[Image.Image, str]:
+def fetch_snapshot(
+    settings: Settings, demo: bool = False
+) -> tuple[dict[str, Any] | None, float | None, str, int]:
     status = "demo" if demo else "live"
     try:
         aircraft = DEMO["ac"] if demo else fetch_aircraft(settings)
@@ -196,6 +198,11 @@ def produce_frame(settings: Settings, demo: bool = False) -> tuple[Image.Image, 
         aircraft = DEMO["ac"]
         status = "demo"
     plane, distance = select_nearest(aircraft, settings)
+    return plane, distance, status, len(aircraft)
+
+
+def produce_frame(settings: Settings, demo: bool = False) -> tuple[Image.Image, str]:
+    plane, distance, status, _ = fetch_snapshot(settings, demo=demo)
     image = render(plane, distance, status)
     save_frame(image, settings)
     return image, status

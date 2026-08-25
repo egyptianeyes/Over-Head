@@ -1,9 +1,9 @@
 # Over-Head
 
 A wall-mounted live aircraft display for a standard monitor. Over-Head retrieves
-nearby aircraft from the Airplanes.live v2 point API, selects the closest
-aircraft with a recent position, and renders a 128×64 RGB display which is
-scaled cleanly to fill the screen.
+nearby aircraft from the ADSB.lol v2 point API and selects the closest
+aircraft with a recent position. The monitor view uses native HTML, CSS and SVG
+at the screen's full resolution. It does not enlarge the 128×64 hardware frame.
 
 Every render writes the same pixels in two formats:
 
@@ -11,6 +11,12 @@ Every render writes the same pixels in two formats:
 - `output/frame.png`: a directly viewable preview
 
 The raw frame is exactly 24,576 bytes: `128 × 64 × 3`.
+
+Airline logos are resolved by the three-letter ICAO operator code. Over-Head
+tries Soaring Symbols first, then the Jxck-S airline-logo collection. Successful
+logos are cached in `cache/logos`, so they remain available through a temporary
+network outage. An operator-code badge is always available when neither source
+has a matching logo.
 
 ## Install
 
@@ -102,9 +108,9 @@ Keep `overhead.py` as the selection and rendering layer. The panel driver
 only needs to consume the RGB888 byte stream and map its 128×64 pixels to the
 chosen hardware. Suitable adapters can target HUB75 panels, addressable RGB
 tiles, SDL, Linux framebuffer, or another panel controller without changing the
-Airplanes.live or layout logic.
+ADSB.lol or monitor layout logic.
 
-No Airplanes.live API key is embedded or required by this version.
+No ADSB.lol API key is embedded or required by this version.
 
 ## Author
 
@@ -118,10 +124,18 @@ Over-Head was inspired by
 LED aircraft information display created by AxisNimble.
 
 Live aircraft position data is provided by the
-[Airplanes.live](https://airplanes.live/) community ADS-B network.
+[ADSB.lol](https://adsb.lol/) community ADS-B network.
+
+Airline artwork is retrieved, when available, from
+[Soaring Symbols](https://github.com/soaring-symbols/soaring-symbols) with a
+fallback to the
+[Jxck-S airline-logo collection](https://github.com/Jxck-S/airline-logos).
+Airline names, marks and logos remain the property of their respective owners.
+They are displayed for aircraft identification and are not covered by
+Over-Head's MIT licence.
 
 Over-Head is an independent project and is not affiliated with or endorsed by
-TheFlightWall or Airplanes.live.
+TheFlightWall, ADSB.lol, Soaring Symbols, Jxck-S, or any airline.
 
 ## License
 

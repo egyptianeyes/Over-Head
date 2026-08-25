@@ -1,19 +1,161 @@
 #!/usr/bin/env python3
-"""Serve the Over-Head RGB framebuffer as a full-screen monitor display."""
+"""Serve Over-Head as a sharp, full-screen monitor display."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
+from typing import Any
+from xml.etree import ElementTree
 
-from overhead import load_settings, produce_frame
+from overhead import fetch_snapshot, load_settings, render, save_frame
+
+
+SOARING_INDEX_URL = (
+    "https://raw.githubusercontent.com/soaring-symbols/soaring-symbols/"
+    "main/airlines.json"
+)
+SOARING_ASSET_URL = (
+    "https://raw.githubusercontent.com/soaring-symbols/soaring-symbols/"
+    "main/assets/{slug}/{filename}"
+)
+JXCK_LOGO_URL = (
+    "https://raw.githubusercontent.com/Jxck-S/airline-logos/"
+    "main/flightaware_logos/{code}.png"
+)
+USER_AGENT = "Over-Head/0.2 (+personal wall display)"
+MAX_LOGO_BYTES = 1_000_000
+
+
+def operator_code(plane: dict[str, Any] | None) -> str:
+    """Return a three-letter ICAO operator code when the callsign has one."""
+    if not plane:
+        return ""
+    callsign = re.sub(r"[^A-Z0-9]", "", str(plane.get("flight") or "").upper())
+    registration = re.sub(r"[^A-Z0-9]", "", str(plane.get("r") or "").upper())
+    if len(callsign) < 4 or not callsign[:3].isalpha() or callsign == registration:
+        return ""
+    return callsign[:3]
+
+
+def safe_svg(data: bytes) -> bytes | None:
+    """Reject active or externally-referencing SVG content before serving it."""
+    if len(data) > MAX_LOGO_BYTES:
+        return None
+    try:
+        root = ElementTree.fromstring(data)
+    except ElementTree.ParseError:
+        return None
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1].lower()
+        if tag in {"script", "foreignobject", "iframe", "object", "embed"}:
+            return None
+        for name, value in node.attrib.items():
+            attr = name.rsplit("}", 1)[-1].lower()
+            if attr.startswith("on"):
+                return None
+            if attr == "href" and value and not value.startswith("#"):
+                return None
+    return data
+
+
+class LogoStore:
+    """Resolve logos once, cache them locally, and remember missing operators."""
+
+    def __init__(self, cache_dir: Path = Path("cache/logos")) -> None:
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.index_path = cache_dir / "soaring-airlines.json"
+        self._index: dict[str, dict[str, Any]] | None = None
+        self._missing: set[str] = set()
+        self._lock = threading.Lock()
+
+    def _download(self, url: str) -> bytes:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=6) as response:
+            if response.status != 200:
+                raise OSError(f"logo response {response.status}")
+            data = response.read(MAX_LOGO_BYTES + 1)
+        if len(data) > MAX_LOGO_BYTES:
+            raise ValueError("logo response too large")
+        return data
+
+    def _load_index(self) -> dict[str, dict[str, Any]]:
+        if self._index is not None:
+            return self._index
+        raw: bytes
+        try:
+            raw = self.index_path.read_bytes()
+            if time.time() - self.index_path.stat().st_mtime > 7 * 86400:
+                raise OSError("stale index")
+        except OSError:
+            raw = self._download(SOARING_INDEX_URL)
+            self.index_path.write_bytes(raw)
+        records = json.loads(raw)
+        self._index = {
+            str(record.get("icao") or "").upper(): record
+            for record in records
+            if isinstance(record, dict) and record.get("icao")
+        }
+        return self._index
+
+    def _soaring(self, code: str) -> tuple[bytes, str, str] | None:
+        record = self._load_index().get(code)
+        if not record or not record.get("slug"):
+            return None
+        slug = str(record["slug"])
+        for filename in ("icon.svg", "logo.svg"):
+            try:
+                data = safe_svg(self._download(SOARING_ASSET_URL.format(slug=slug, filename=filename)))
+            except (OSError, ValueError, urllib.error.URLError, TimeoutError):
+                continue
+            if data:
+                return data, "image/svg+xml", "Soaring Symbols"
+        return None
+
+    def _jxck(self, code: str) -> tuple[bytes, str, str] | None:
+        try:
+            data = self._download(JXCK_LOGO_URL.format(code=code))
+        except (OSError, ValueError, urllib.error.URLError, TimeoutError):
+            return None
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return None
+        return data, "image/png", "Jxck-S airline-logos"
+
+    def get(self, code: str) -> tuple[bytes, str, str] | None:
+        if not re.fullmatch(r"[A-Z]{3}", code) or code in self._missing:
+            return None
+        with self._lock:
+            for suffix, content_type, source in (
+                ("svg", "image/svg+xml", "Soaring Symbols"),
+                ("png", "image/png", "Jxck-S airline-logos"),
+            ):
+                path = self.cache_dir / f"{code}.{suffix}"
+                if path.is_file():
+                    return path.read_bytes(), content_type, source
+            try:
+                result = self._soaring(code)
+            except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError, TimeoutError):
+                result = None
+            result = result or self._jxck(code)
+            if result:
+                data, content_type, source = result
+                suffix = "svg" if content_type == "image/svg+xml" else "png"
+                (self.cache_dir / f"{code}.{suffix}").write_bytes(data)
+                return result
+            self._missing.add(code)
+            return None
 
 
 PAGE = b"""<!doctype html>
@@ -23,36 +165,83 @@ PAGE = b"""<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Over-Head</title>
   <style>
-    :root { color-scheme: dark; }
+    :root { color-scheme: dark; --bg:#02050a; --line:#123846; --cyan:#14ecff; --white:#e8f6ff; --muted:#6c9aac; --amber:#ffb020; --red:#ff3e52; }
     * { box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #020409; }
-    body { display: grid; place-items: center; font-family: system-ui, sans-serif; cursor: none; }
-    .wall { width: 100vw; height: 100vh; display: grid; place-items: center; background:
-      radial-gradient(ellipse at center, #07131b 0%, #020409 66%); }
-    img { width: min(100vw, 200vh); height: auto; max-height: 100vh; object-fit: contain;
-      image-rendering: pixelated; image-rendering: crisp-edges; filter: saturate(1.1) contrast(1.04);
-      box-shadow: 0 0 12vh rgba(20,236,255,.09); }
-    .status { position: fixed; right: 12px; bottom: 8px; color: #416573; font: 11px monospace;
-      opacity: .65; }
+    html,body { width:100%; height:100%; margin:0; overflow:hidden; background:var(--bg); }
+    body { color:var(--white); font-family:"Segoe UI",Arial,sans-serif; cursor:none; -webkit-font-smoothing:antialiased; text-rendering:geometricPrecision; }
+    .wall { width:100vw; height:100vh; padding:clamp(18px,2.4vw,52px); display:grid; grid-template-rows:auto 1fr auto; gap:clamp(14px,2vh,28px); background:radial-gradient(circle at 76% 48%,rgba(20,236,255,.075),transparent 28%),linear-gradient(145deg,#06121a 0%,var(--bg) 52%); }
+    header,footer { display:flex; align-items:center; justify-content:space-between; }
+    .brand { color:var(--cyan); font-size:clamp(30px,4.2vw,78px); font-weight:800; letter-spacing:-.055em; line-height:1; }
+    .live { display:flex; align-items:center; gap:.7em; color:var(--muted); font-size:clamp(14px,1.45vw,26px); font-weight:700; letter-spacing:.16em; }
+    .live-dot { width:.62em; height:.62em; border-radius:50%; background:var(--cyan); box-shadow:0 0 1em var(--cyan); }
+    .live.demo .live-dot { background:var(--amber); box-shadow:0 0 1em var(--amber); }
+    .live.error .live-dot { background:var(--red); box-shadow:0 0 1em var(--red); }
+    main { min-height:0; border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.72); display:grid; grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr); overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.34); }
+    .information { min-width:0; padding:clamp(26px,4vw,76px); display:flex; flex-direction:column; justify-content:space-between; }
+    .callsign { overflow:hidden; color:var(--white); font-size:clamp(64px,10.5vw,198px); font-weight:800; letter-spacing:-.065em; line-height:.88; white-space:nowrap; }
+    .identity-row { margin-top:clamp(18px,2.2vh,34px); display:flex; align-items:center; gap:clamp(18px,2vw,34px); min-height:clamp(64px,8vh,104px); }
+    .logo-box { flex:0 0 clamp(82px,8vw,142px); height:clamp(64px,8vh,104px); display:grid; place-items:center; border:1px solid var(--line); border-radius:clamp(12px,1.2vw,20px); background:rgba(255,255,255,.96); overflow:hidden; }
+    .logo-box img { display:none; width:82%; height:76%; object-fit:contain; }
+    .operator-badge { color:#09212b; font-size:clamp(24px,2.5vw,44px); font-weight:850; letter-spacing:.08em; }
+    .identity { min-width:0; color:var(--muted); font-size:clamp(22px,3.1vw,54px); font-weight:650; letter-spacing:.08em; }
+    .metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
+    .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
+    .metric-label { color:var(--muted); font-size:clamp(11px,1vw,18px); font-weight:700; letter-spacing:.18em; }
+    .metric-value { margin-top:.18em; color:var(--white); font-size:clamp(27px,3.5vw,64px); font-weight:750; letter-spacing:-.035em; white-space:nowrap; }
+    .metric:first-child .metric-value { color:var(--amber); }
+    .aircraft-panel { position:relative; display:grid; place-items:center; border-left:1px solid var(--line); overflow:hidden; }
+    .range-ring { position:absolute; width:min(70%,54vh); aspect-ratio:1; border:1px solid rgba(20,236,255,.13); border-radius:50%; }
+    .range-ring::before,.range-ring::after { content:""; position:absolute; inset:20%; border:1px solid rgba(20,236,255,.09); border-radius:50%; }
+    .range-ring::after { inset:40%; }
+    .plane { position:relative; width:min(48%,36vh); aspect-ratio:1; color:var(--cyan); filter:drop-shadow(0 0 22px rgba(20,236,255,.3)); transition:transform 900ms ease; }
+    .plane svg { width:100%; height:100%; overflow:visible; }
+    .distance { position:absolute; right:clamp(20px,3vw,54px); bottom:clamp(18px,3vh,44px); text-align:right; }
+    .distance strong { display:block; color:var(--white); font-size:clamp(34px,5vw,88px); line-height:.9; letter-spacing:-.045em; }
+    .distance span { color:var(--muted); font-size:clamp(12px,1.2vw,21px); font-weight:700; letter-spacing:.16em; }
+    footer { color:#52717e; font:600 clamp(11px,.9vw,16px)/1.2 "Segoe UI",sans-serif; letter-spacing:.1em; }
+    @media (max-aspect-ratio:4/3) { main { grid-template-columns:1fr; grid-template-rows:1fr .8fr; } .aircraft-panel { border-left:0; border-top:1px solid var(--line); } .callsign { font-size:clamp(56px,15vw,130px); } }
   </style>
 </head>
 <body>
-  <main class="wall"><img id="frame" src="/frame.png" alt="Live nearby aircraft"></main>
-  <div class="status" id="status">STARTING</div>
+  <section class="wall">
+    <header><div class="brand">OVER-HEAD</div><div class="live" id="live"><span class="live-dot"></span><span id="mode">STARTING</span></div></header>
+    <main>
+      <section class="information">
+        <div><div class="callsign" id="callsign">WAITING</div><div class="identity-row"><div class="logo-box" id="logo-box"><img id="operator-logo" alt=""><span class="operator-badge" id="operator-badge">---</span></div><div class="identity" id="identity">FETCHING AIRCRAFT</div></div></div>
+        <div class="metrics">
+          <div class="metric"><div class="metric-label">ALTITUDE</div><div class="metric-value" id="altitude">--</div></div>
+          <div class="metric"><div class="metric-label">GROUND SPEED</div><div class="metric-value" id="speed">--</div></div>
+          <div class="metric"><div class="metric-label">VERTICAL</div><div class="metric-value" id="vertical">--</div></div>
+        </div>
+      </section>
+      <section class="aircraft-panel">
+        <div class="range-ring"></div>
+        <div class="plane" id="plane"><svg viewBox="-60 -60 120 120" aria-label="Aircraft heading"><path fill="currentColor" d="M0-56c5 0 8 7 9 14l4 26 35 20c5 3 8 8 8 13v5L13 10l-2 26 13 9v6L0 45l-24 6v-6l13-9-2-26-43 12v-5c0-5 3-10 8-13l35-20 4-26c1-7 4-14 9-14z"/></svg></div>
+        <div class="distance"><strong id="distance">--</strong><span>NAUTICAL MILES</span></div>
+      </section>
+    </main>
+    <footer><span>SOURCE: ADSB.LOL</span><span id="footer-status">CONNECTING</span></footer>
+  </section>
   <script>
-    const frame = document.getElementById('frame');
-    const status = document.getElementById('status');
-    async function update() {
-      frame.src = '/frame.png?t=' + Date.now();
-      try {
-        const response = await fetch('/status', {cache: 'no-store'});
-        const data = await response.json();
-        status.textContent = data.mode.toUpperCase() + '  ' + data.updated;
-      } catch (_) { status.textContent = 'RECONNECTING'; }
+    const byId=id=>document.getElementById(id);
+    const number=(value,digits=0)=>value==null?'--':Number(value).toFixed(digits);
+    const altitude=value=>typeof value==='number'?Math.round(value).toLocaleString()+' FT':String(value||'--').toUpperCase();
+    function vertical(value){ if(typeof value!=='number')return 'LEVEL'; if(value>150)return '\\u2191 '+Math.abs(Math.round(value)).toLocaleString(); if(value<-150)return '\\u2193 '+Math.abs(Math.round(value)).toLocaleString(); return 'LEVEL'; }
+    async function update(){
+      try{
+        const response=await fetch('/status?t='+Date.now(),{cache:'no-store'}); if(!response.ok)throw new Error('status'); const d=await response.json();
+        const mode=String(d.mode||'live').toLowerCase(); byId('live').className='live '+mode; byId('mode').textContent=mode.toUpperCase();
+        byId('callsign').textContent=d.callsign||d.registration||'NO AIRCRAFT';
+        byId('identity').textContent=[d.airline_name,d.registration,d.aircraft_type].filter(Boolean).join('  /  ')||'IN RANGE';
+        const logo=byId('operator-logo'),badge=byId('operator-badge'); badge.textContent=d.operator_code||'---';
+        if(d.logo_available){ logo.onload=()=>{logo.style.display='block';badge.style.display='none'}; logo.onerror=()=>{logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
+        else { logo.removeAttribute('src'); logo.style.display='none'; badge.style.display='block'; }
+        byId('altitude').textContent=altitude(d.altitude); byId('speed').textContent=d.speed==null?'--':Math.round(d.speed)+' KT'; byId('vertical').textContent=vertical(d.vertical_rate);
+        byId('distance').textContent=number(d.distance_nm,1); byId('plane').style.transform='rotate('+number(d.track,0)+'deg)';
+        byId('footer-status').textContent=d.total+' CONTACTS  /  UPDATED '+d.updated;
+      }catch(_){ byId('live').className='live error'; byId('mode').textContent='RECONNECTING'; }
     }
-    setInterval(update, 2000);
-    update();
-    document.addEventListener('dblclick', () => document.documentElement.requestFullscreen?.());
+    setInterval(update,2000); update(); document.addEventListener('dblclick',()=>document.documentElement.requestFullscreen?.());
   </script>
 </body>
 </html>
@@ -63,94 +252,92 @@ class FrameState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.png = b""
-        self.mode = "starting"
-        self.updated = "never"
+        self.logo = b""
+        self.logo_type = "image/svg+xml"
+        self.payload: dict[str, Any] = {"mode": "starting", "updated": "never", "total": 0}
 
-    def update(self, image, mode: str) -> None:
+    def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, total: int, logo: tuple[bytes, str, str] | None) -> None:
         data = BytesIO()
         image.save(data, format="PNG")
+        plane = plane or {}
+        code = operator_code(plane)
+        logo_data, logo_type, logo_source = logo or (b"", "", "")
+        payload = {
+            "mode": mode,
+            "updated": time.strftime("%H:%M:%S"),
+            "total": total,
+            "callsign": str(plane.get("flight") or "").strip(),
+            "registration": str(plane.get("r") or "").strip(),
+            "aircraft_type": str(plane.get("t") or "").strip(),
+            "altitude": plane.get("alt_baro"), "speed": plane.get("gs"), "vertical_rate": plane.get("baro_rate"),
+            "track": plane.get("track") or 0, "distance_nm": distance, "squawk": plane.get("squawk"), "emergency": plane.get("emergency"),
+            "operator_code": code, "airline_name": "", "logo_available": bool(logo_data),
+            "logo_source": logo_source,
+            "logo_revision": f"{code}-{hashlib.sha256(logo_data).hexdigest()[:12]}" if logo_data else code,
+        }
         with self.lock:
             self.png = data.getvalue()
-            self.mode = mode
-            self.updated = time.strftime("%H:%M:%S")
+            self.logo = logo_data
+            self.logo_type = logo_type or "application/octet-stream"
+            self.payload = payload
 
 
-def refresh_loop(state: FrameState, settings, demo: bool) -> None:
+def update_state(state: FrameState, settings, demo: bool, logos: LogoStore) -> None:
+    plane, distance, mode, total = fetch_snapshot(settings, demo=demo)
+    image = render(plane, distance, mode)
+    save_frame(image, settings)
+    state.update(image, mode, plane, distance, total, logos.get(operator_code(plane)))
+
+
+def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore) -> None:
     while True:
-        try:
-            image, mode = produce_frame(settings, demo=demo)
-            state.update(image, mode)
-        except Exception as exc:  # keep the wall alive and expose the failure mode
-            with state.lock:
-                state.mode = f"error: {type(exc).__name__}"
-                state.updated = time.strftime("%H:%M:%S")
         time.sleep(max(1.0, settings.refresh_seconds))
+        try:
+            update_state(state, settings, demo, logos)
+        except Exception as exc:
+            with state.lock:
+                state.payload["mode"] = "error"
+                state.payload["updated"] = time.strftime("%H:%M:%S")
+                state.payload["error"] = type(exc).__name__
 
 
 def handler_factory(state: FrameState):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
-            if path == "/":
-                self.send(HTTPStatus.OK, "text/html; charset=utf-8", PAGE)
+            if path == "/": self.send(HTTPStatus.OK, "text/html; charset=utf-8", PAGE)
             elif path == "/frame.png":
-                with state.lock:
-                    body = state.png
-                if body:
-                    self.send(HTTPStatus.OK, "image/png", body, cache=False)
-                else:
-                    self.send(HTTPStatus.SERVICE_UNAVAILABLE, "text/plain", b"Starting")
+                with state.lock: body = state.png
+                self.send(HTTPStatus.OK, "image/png", body, cache=False)
             elif path == "/status":
-                with state.lock:
-                    body = json.dumps({"mode": state.mode, "updated": state.updated}).encode()
+                with state.lock: body = json.dumps(state.payload).encode()
                 self.send(HTTPStatus.OK, "application/json", body, cache=False)
-            else:
-                self.send(HTTPStatus.NOT_FOUND, "text/plain", b"Not found")
+            elif path == "/operator-logo":
+                with state.lock: body, content_type = state.logo, state.logo_type
+                if body: self.send(HTTPStatus.OK, content_type, body, cache=True)
+                else: self.send(HTTPStatus.NOT_FOUND, "text/plain", b"No logo", cache=False)
+            else: self.send(HTTPStatus.NOT_FOUND, "text/plain", b"Not found")
 
         def send(self, status, content_type, body, cache=True) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "public, max-age=30" if cache else "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_response(status); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "public, max-age=30" if cache else "no-store"); self.end_headers(); self.wfile.write(body)
 
-        def log_message(self, fmt, *args) -> None:
-            return
+        def log_message(self, fmt, *args) -> None: return
 
     return Handler
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="config.json")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--demo", action="store_true")
-    parser.add_argument("--open", action="store_true", dest="open_browser")
-    args = parser.parse_args()
-
-    settings = load_settings(Path(args.config))
-    state = FrameState()
-    first_image, first_mode = produce_frame(settings, demo=args.demo)
-    state.update(first_image, first_mode)
-    thread = threading.Thread(target=refresh_loop, args=(state, settings, args.demo), daemon=True)
-    thread.start()
-
-    server = ThreadingHTTPServer((args.host, args.port), handler_factory(state))
-    url = f"http://{args.host}:{args.port}/"
-    print(f"Over-Head monitor running at {url}")
-    print("Double-click the display to enter browser full-screen mode.")
-    if args.open_browser:
-        webbrowser.open(url)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    parser.add_argument("--config", default="config.json"); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8765); parser.add_argument("--demo", action="store_true"); parser.add_argument("--open", action="store_true", dest="open_browser")
+    args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); update_state(state, settings, args.demo, logos)
+    threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos), daemon=True).start()
+    server = ThreadingHTTPServer((args.host, args.port), handler_factory(state)); url = f"http://{args.host}:{args.port}/"
+    print(f"Over-Head monitor running at {url}"); print("Double-click the display to enter browser full-screen mode.")
+    if args.open_browser: webbrowser.open(url)
+    try: server.serve_forever()
+    except KeyboardInterrupt: pass
+    finally: server.server_close()
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__": raise SystemExit(main())

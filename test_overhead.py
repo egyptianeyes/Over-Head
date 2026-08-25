@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from monitor import operator_code, safe_svg
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -22,6 +23,14 @@ class OverHeadTests(unittest.TestCase):
             self.assertEqual(status, "demo")
             self.assertEqual((Path(tmp) / "frame.rgb").stat().st_size, WIDTH * HEIGHT * 3)
             self.assertTrue((Path(tmp) / "frame.png").is_file())
+
+    def test_operator_code_ignores_registration_callsigns(self):
+        self.assertEqual(operator_code({"flight": "RYR6432", "r": "SP-RZX"}), "RYR")
+        self.assertEqual(operator_code({"flight": "GBNZB", "r": "G-BNZB"}), "")
+
+    def test_svg_safety_filter(self):
+        self.assertIsNotNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'))
+        self.assertIsNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>'))
 
 
 if __name__ == "__main__":
