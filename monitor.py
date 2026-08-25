@@ -274,9 +274,12 @@ PAGE = b"""<!doctype html>
     .identity { margin-top:clamp(18px,2.2vh,34px); min-width:0; display:flex; flex-direction:column; gap:.24em; }
     .registration { color:var(--muted); font-size:clamp(22px,2.5vw,44px); font-weight:700; letter-spacing:.1em; }
     .aircraft-name { color:var(--white); font-size:clamp(17px,1.55vw,28px); font-weight:650; letter-spacing:.065em; }
-    .logo-box { width:clamp(180px,15vw,286px); height:clamp(94px,10vh,132px); display:grid; place-items:center; border:1px solid var(--line); border-radius:clamp(12px,1.2vw,20px); background:rgba(255,255,255,.97); overflow:hidden; }
-    .logo-box img { display:none; width:88%; height:74%; object-fit:contain; }
-    .operator-badge { color:#09212b; font-size:clamp(24px,2.5vw,44px); font-weight:850; letter-spacing:.08em; }
+    .logo-box { width:clamp(190px,17vw,330px); height:clamp(100px,14vh,180px); display:grid; place-items:center; overflow:visible; transition:width .2s ease,height .2s ease; }
+    .logo-box.wide { width:clamp(240px,19vw,370px); height:clamp(80px,10vh,125px); }
+    .logo-box.square { width:clamp(110px,10vw,180px); height:clamp(110px,12vh,180px); }
+    .logo-box.tall { width:clamp(100px,9vw,160px); height:clamp(125px,16vh,205px); }
+    .logo-box img { display:none; max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; filter:drop-shadow(0 0 12px rgba(108,154,172,.15)); }
+    .operator-badge { color:var(--cyan); font-size:clamp(24px,2.5vw,44px); font-weight:850; letter-spacing:.08em; }
     .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
     .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
     .metric-label { color:var(--muted); font-size:clamp(11px,1vw,18px); font-weight:700; letter-spacing:.18em; }
@@ -304,18 +307,22 @@ PAGE = b"""<!doctype html>
     .zoom-button { width:2.15em; height:2.15em; padding:0; display:grid; place-items:center; cursor:pointer; border:1px solid var(--line); border-radius:50%; background:rgba(20,236,255,.055); color:var(--cyan); font:700 clamp(15px,1.2vw,21px)/1 "Segoe UI",sans-serif; }
     .zoom-button:hover,.zoom-button:focus-visible { border-color:var(--cyan); background:rgba(20,236,255,.12); outline:none; }
     .zoom-button:disabled { color:#34525e; border-color:#18303a; cursor:default; }
+    .wall.no-aircraft .information { justify-content:center; }
+    .wall.no-aircraft .flight-heading { display:block; }
+    .wall.no-aircraft .callsign { text-align:center; font-size:clamp(100px,15vw,260px); line-height:1; letter-spacing:0; }
+    .wall.no-aircraft .identity,.wall.no-aircraft .logo-box,.wall.no-aircraft .metrics { display:none; }
     footer { color:#52717e; font:600 clamp(11px,.9vw,16px)/1.2 "Segoe UI",sans-serif; letter-spacing:.1em; }
     @media (max-width:1150px) { .wall.radar-open .content { grid-template-columns:minmax(0,1fr) minmax(280px,36vw); } .wall.radar-open .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-aspect-ratio:4/3) { .callsign { font-size:clamp(56px,15vw,130px); } }
   </style>
 </head>
 <body>
-  <section class="wall" id="wall">
+  <section class="wall no-aircraft" id="wall">
     <header><div class="brand">OVER-HEAD</div><div class="header-tools"><button class="sound-toggle" id="sound-toggle" type="button" aria-label="Mute aircraft change sound" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6m-5 2h4M6.5 16.5h11c-1.6-1.7-2.2-3.5-2.2-6.2A3.3 3.3 0 0 0 12 7a3.3 3.3 0 0 0-3.3 3.3c0 2.7-.6 4.5-2.2 6.2Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path class="mute-slash" d="M4 4l16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button><button class="radar-toggle" id="radar-toggle" type="button" aria-pressed="false">RADAR</button><div class="live" id="live"><span class="live-dot"></span><span id="mode">STARTING</span></div></div></header>
     <div class="content">
     <main>
       <section class="information">
-        <div class="flight-heading"><div class="flight-copy"><div class="callsign" id="callsign">WAITING</div><div class="identity"><span class="registration" id="registration">FETCHING AIRCRAFT</span><span class="aircraft-name" id="aircraft-name">AIRCRAFT NOT IDENTIFIED</span></div></div><div class="logo-box" id="logo-box"><img id="operator-logo" alt=""><span class="operator-badge" id="operator-badge">---</span></div></div>
+        <div class="flight-heading"><div class="flight-copy"><div class="callsign" id="callsign">-</div><div class="identity"><span class="registration" id="registration"></span><span class="aircraft-name" id="aircraft-name"></span></div></div><div class="logo-box" id="logo-box"><img id="operator-logo" alt=""><span class="operator-badge" id="operator-badge">-</span></div></div>
         <div class="metrics">
           <div class="metric"><div class="metric-label">ALTITUDE</div><div class="metric-value" id="altitude">--</div></div>
           <div class="metric"><div class="metric-label">GROUND SPEED</div><div class="metric-value" id="speed">--</div></div>
@@ -369,12 +376,12 @@ PAGE = b"""<!doctype html>
       try{
         const response=await fetch('/status?t='+Date.now(),{cache:'no-store'}); if(!response.ok)throw new Error('status'); const d=await response.json();
         const mode=String(d.mode||'live').toLowerCase(); byId('live').className='live '+mode; byId('mode').textContent=mode.toUpperCase();
-        byId('callsign').textContent=d.callsign||d.registration||'NO AIRCRAFT';
+        const hasAircraft=Boolean(d.aircraft_id); byId('wall').classList.toggle('no-aircraft',!hasAircraft); byId('callsign').textContent=hasAircraft?(d.callsign||d.registration||d.aircraft_id):'-';
         if(d.aircraft_id&&d.aircraft_id!==trackedAircraftId){ trackedAircraftId=d.aircraft_id; playTone(); } else if(!d.aircraft_id){ trackedAircraftId=''; }
         byId('registration').textContent=d.registration||'REGISTRATION UNKNOWN'; byId('aircraft-name').textContent=d.aircraft_name+(d.aircraft_type?'  \\u00b7  '+d.aircraft_type:'');
-        const logo=byId('operator-logo'),badge=byId('operator-badge'); badge.textContent=d.operator_code||'---';
-        if(d.logo_available){ logo.onload=()=>{logo.style.display='block';badge.style.display='none'}; logo.onerror=()=>{logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
-        else { logo.removeAttribute('src'); logo.style.display='none'; badge.style.display='block'; }
+        const logo=byId('operator-logo'),badge=byId('operator-badge'),logoBox=byId('logo-box'); badge.textContent=d.operator_code||'-';
+        if(d.logo_available){ logo.onload=()=>{ const ratio=logo.naturalWidth&&logo.naturalHeight?logo.naturalWidth/logo.naturalHeight:2; const shape=ratio>2.2?'wide':ratio<.8?'tall':ratio<1.25?'square':'standard'; logoBox.className='logo-box '+shape; logo.style.display='block'; badge.style.display='none'; }; logo.onerror=()=>{logoBox.className='logo-box square';logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
+        else { logo.removeAttribute('src'); logoBox.className='logo-box square'; logo.style.display='none'; badge.style.display='block'; }
         byId('altitude').textContent=altitude(d.altitude); byId('speed').textContent=d.speed==null?'--':Math.round(d.speed)+' KT'; byId('vertical').textContent=vertical(d.vertical_rate);
         byId('distance-main').textContent=number(d.distance_nm,1);
         drawRadar(d.radar_contacts,d.radar_radius_nm);

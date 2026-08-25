@@ -37,6 +37,9 @@ class OverHeadTests(unittest.TestCase):
         self.assertEqual(aircraft_name("B738"), "BOEING 737-800")
         self.assertEqual(aircraft_name("A20N"), "AIRBUS A320NEO")
         self.assertEqual(aircraft_name("P28A"), "PIPER PA-28 CHEROKEE")
+        self.assertEqual(aircraft_name("B762"), "BOEING 767-200")
+        self.assertEqual(aircraft_name("B764"), "BOEING 767-400ER")
+        self.assertEqual(aircraft_name("B76F"), "BOEING 767 FREIGHTER")
 
     def test_svg_safety_filter(self):
         self.assertIsNotNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'))
