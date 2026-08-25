@@ -1,0 +1,9 @@
+{
+  "latitude": 51.5074,
+  "longitude": -0.1278,
+  "radius_nm": 25,
+  "refresh_seconds": 10,
+  "output_rgb": "output/frame.rgb",
+  "output_png": "output/frame.png",
+  "demo_on_failure": true
+}
