@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import threading
 import time
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from overhead import fetch_snapshot, load_settings, render, save_frame
+from overhead import fetch_traffic_snapshot, load_settings, render, save_frame, select_nearest
 
 
 SOARING_INDEX_URL = (
@@ -68,6 +69,39 @@ def safe_svg(data: bytes) -> bytes | None:
             if attr == "href" and value and not value.startswith("#"):
                 return None
     return data
+
+
+def radar_contacts(aircraft: list[dict[str, Any]], settings, selected: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Project current aircraft positions onto a north-up circular radar."""
+    selected_hex = str((selected or {}).get("hex") or "")
+    latitude_scale = 60.0405
+    longitude_scale = latitude_scale * math.cos(math.radians(settings.latitude))
+    contacts: list[dict[str, Any]] = []
+    for plane in aircraft:
+        lat, lon = plane.get("lat"), plane.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            continue
+        try:
+            if float(plane.get("seen_pos", 999)) > 20:
+                continue
+        except (TypeError, ValueError):
+            continue
+        east = (float(lon) - settings.longitude) * longitude_scale
+        north = (float(lat) - settings.latitude) * latitude_scale
+        distance = math.hypot(east, north)
+        if distance > settings.radius_nm:
+            continue
+        callsign = str(plane.get("flight") or plane.get("r") or plane.get("hex") or "").strip()
+        contacts.append({
+            "x": round(50 + east / settings.radius_nm * 46, 2),
+            "y": round(50 - north / settings.radius_nm * 46, 2),
+            "callsign": callsign,
+            "track": plane.get("track") or 0,
+            "altitude": plane.get("alt_baro"),
+            "selected": bool(selected_hex and str(plane.get("hex") or "") == selected_hex),
+            "emergency": str(plane.get("squawk") or "") in {"7500", "7600", "7700"},
+        })
+    return contacts
 
 
 class LogoStore:
@@ -171,12 +205,17 @@ PAGE = b"""<!doctype html>
     body { color:var(--white); font-family:"Segoe UI",Arial,sans-serif; cursor:none; -webkit-font-smoothing:antialiased; text-rendering:geometricPrecision; }
     .wall { width:100vw; height:100vh; padding:clamp(18px,2.4vw,52px); display:grid; grid-template-rows:auto 1fr auto; gap:clamp(14px,2vh,28px); background:radial-gradient(circle at 76% 48%,rgba(20,236,255,.075),transparent 28%),linear-gradient(145deg,#06121a 0%,var(--bg) 52%); }
     header,footer { display:flex; align-items:center; justify-content:space-between; }
+    .header-tools { display:flex; align-items:center; gap:clamp(14px,1.5vw,28px); }
+    .radar-toggle { cursor:pointer; border:1px solid var(--line); border-radius:999px; padding:.62em 1.05em; background:rgba(20,236,255,.055); color:var(--muted); font:750 clamp(11px,1vw,18px)/1 "Segoe UI",sans-serif; letter-spacing:.14em; }
+    .radar-toggle:hover,.radar-toggle:focus-visible,.wall.radar-open .radar-toggle { color:var(--cyan); border-color:rgba(20,236,255,.48); outline:none; }
     .brand { color:var(--cyan); font-size:clamp(30px,4.2vw,78px); font-weight:800; letter-spacing:-.055em; line-height:1; }
     .live { display:flex; align-items:center; gap:.7em; color:var(--muted); font-size:clamp(14px,1.45vw,26px); font-weight:700; letter-spacing:.16em; }
     .live-dot { width:.62em; height:.62em; border-radius:50%; background:var(--cyan); box-shadow:0 0 1em var(--cyan); }
     .live.demo .live-dot { background:var(--amber); box-shadow:0 0 1em var(--amber); }
     .live.error .live-dot { background:var(--red); box-shadow:0 0 1em var(--red); }
-    main { min-height:0; border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.72); display:grid; grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr); overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.34); }
+    .content { min-height:0; display:grid; grid-template-columns:minmax(0,1fr); gap:clamp(14px,1.3vw,24px); }
+    .wall.radar-open .content { grid-template-columns:minmax(0,1fr) clamp(320px,29vw,560px); }
+    main { min-height:0; border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.72); display:grid; grid-template-columns:minmax(0,1.15fr) minmax(270px,.85fr); overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.34); }
     .information { min-width:0; padding:clamp(26px,4vw,76px); display:flex; flex-direction:column; justify-content:space-between; }
     .callsign { overflow:hidden; color:var(--white); font-size:clamp(64px,10.5vw,198px); font-weight:800; letter-spacing:-.065em; line-height:.88; white-space:nowrap; }
     .identity-row { margin-top:clamp(18px,2.2vh,34px); display:flex; align-items:center; gap:clamp(18px,2vw,34px); min-height:clamp(64px,8vh,104px); }
@@ -198,13 +237,31 @@ PAGE = b"""<!doctype html>
     .distance { position:absolute; right:clamp(20px,3vw,54px); bottom:clamp(18px,3vh,44px); text-align:right; }
     .distance strong { display:block; color:var(--white); font-size:clamp(34px,5vw,88px); line-height:.9; letter-spacing:-.045em; }
     .distance span { color:var(--muted); font-size:clamp(12px,1.2vw,21px); font-weight:700; letter-spacing:.16em; }
+    .radar-panel { display:none; min-width:0; min-height:0; padding:clamp(18px,1.8vw,30px); border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.78); grid-template-rows:auto minmax(0,1fr) auto; overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.28); }
+    .wall.radar-open .radar-panel { display:grid; }
+    .radar-heading { display:flex; align-items:end; justify-content:space-between; }
+    .radar-heading strong { color:var(--white); font-size:clamp(18px,1.5vw,28px); letter-spacing:.08em; }
+    .radar-heading span,.radar-foot { color:var(--muted); font-size:clamp(10px,.82vw,14px); font-weight:700; letter-spacing:.14em; }
+    .radar-stage { min-height:0; display:grid; place-items:center; }
+    #radar { width:min(100%,52vh); aspect-ratio:1; overflow:visible; }
+    .radar-grid { fill:rgba(20,236,255,.018); stroke:rgba(20,236,255,.18); stroke-width:.35; vector-effect:non-scaling-stroke; }
+    .radar-axis { stroke:rgba(20,236,255,.09); stroke-width:.3; vector-effect:non-scaling-stroke; }
+    .radar-home { fill:var(--white); filter:drop-shadow(0 0 2px var(--cyan)); }
+    .contact { color:var(--muted); transition:transform 800ms ease; }
+    .contact.selected { color:var(--cyan); filter:drop-shadow(0 0 1.6px var(--cyan)); }
+    .contact.emergency { color:var(--red); }
+    .contact path { fill:currentColor; }
+    .contact text { fill:currentColor; font:700 3.2px "Segoe UI",sans-serif; letter-spacing:.02em; }
+    .radar-foot { display:flex; justify-content:space-between; }
     footer { color:#52717e; font:600 clamp(11px,.9vw,16px)/1.2 "Segoe UI",sans-serif; letter-spacing:.1em; }
+    @media (max-width:1150px) { .wall.radar-open .content { grid-template-columns:minmax(0,1fr) minmax(280px,36vw); } .wall.radar-open .aircraft-panel { display:none; } .wall.radar-open main { grid-template-columns:1fr; } }
     @media (max-aspect-ratio:4/3) { main { grid-template-columns:1fr; grid-template-rows:1fr .8fr; } .aircraft-panel { border-left:0; border-top:1px solid var(--line); } .callsign { font-size:clamp(56px,15vw,130px); } }
   </style>
 </head>
 <body>
-  <section class="wall">
-    <header><div class="brand">OVER-HEAD</div><div class="live" id="live"><span class="live-dot"></span><span id="mode">STARTING</span></div></header>
+  <section class="wall" id="wall">
+    <header><div class="brand">OVER-HEAD</div><div class="header-tools"><button class="radar-toggle" id="radar-toggle" type="button" aria-pressed="false">RADAR</button><div class="live" id="live"><span class="live-dot"></span><span id="mode">STARTING</span></div></div></header>
+    <div class="content">
     <main>
       <section class="information">
         <div><div class="callsign" id="callsign">WAITING</div><div class="identity-row"><div class="logo-box" id="logo-box"><img id="operator-logo" alt=""><span class="operator-badge" id="operator-badge">---</span></div><div class="identity" id="identity">FETCHING AIRCRAFT</div></div></div>
@@ -220,13 +277,35 @@ PAGE = b"""<!doctype html>
         <div class="distance"><strong id="distance">--</strong><span>NAUTICAL MILES</span></div>
       </section>
     </main>
+    <aside class="radar-panel" aria-label="Nearby aircraft radar">
+      <div class="radar-heading"><strong>WIDER AREA</strong><span id="radar-count">0 CONTACTS</span></div>
+      <div class="radar-stage"><svg id="radar" viewBox="0 0 100 100" role="img" aria-label="North-up radar of nearby aircraft">
+        <circle class="radar-grid" cx="50" cy="50" r="46"/><circle class="radar-grid" cx="50" cy="50" r="30.7"/><circle class="radar-grid" cx="50" cy="50" r="15.3"/>
+        <path class="radar-axis" d="M50 4V96M4 50H96"/><text x="50" y="2.8" text-anchor="middle" fill="#6c9aac" font-size="3">N</text>
+        <g id="radar-contacts"></g><circle class="radar-home" cx="50" cy="50" r="1.25"/>
+      </svg></div>
+      <div class="radar-foot"><span>HOME CENTRE</span><span id="radar-range">25 NM RANGE</span></div>
+    </aside>
+    </div>
     <footer><span>SOURCE: ADSB.LOL</span><span id="footer-status">CONNECTING</span></footer>
   </section>
   <script>
     const byId=id=>document.getElementById(id);
+    const svgNS='http://www.w3.org/2000/svg';
     const number=(value,digits=0)=>value==null?'--':Number(value).toFixed(digits);
     const altitude=value=>typeof value==='number'?Math.round(value).toLocaleString()+' FT':String(value||'--').toUpperCase();
     function vertical(value){ if(typeof value!=='number')return 'LEVEL'; if(value>150)return '\\u2191 '+Math.abs(Math.round(value)).toLocaleString(); if(value<-150)return '\\u2193 '+Math.abs(Math.round(value)).toLocaleString(); return 'LEVEL'; }
+    function drawRadar(contacts,radius){
+      const layer=byId('radar-contacts'); layer.replaceChildren();
+      for(const c of contacts||[]){
+        const group=document.createElementNS(svgNS,'g'); group.setAttribute('class','contact'+(c.selected?' selected':'')+(c.emergency?' emergency':'')); group.setAttribute('transform','translate('+c.x+' '+c.y+') rotate('+(Number(c.track)||0)+')');
+        const plane=document.createElementNS(svgNS,'path'); plane.setAttribute('d','M0-2.3L.65-.25 2.3.7 2.3 1.2.6.7.45 2 1.15 2.5 1.15 2.8 0 2.5-1.15 2.8-1.15 2.5-.45 2-.6.7-2.3 1.2-2.3.7-.65-.25Z'); group.appendChild(plane);
+        if(c.selected||(contacts||[]).length<=10){ const label=document.createElementNS(svgNS,'text'); label.textContent=c.callsign; label.setAttribute('x','2.8'); label.setAttribute('y','-1.5'); label.setAttribute('transform','rotate('+(0-(Number(c.track)||0))+' 2.8 -1.5)'); group.appendChild(label); }
+        layer.appendChild(group);
+      }
+      byId('radar-count').textContent=(contacts||[]).length+' CONTACTS'; byId('radar-range').textContent=number(radius,0)+' NM RANGE';
+    }
+    function setRadar(open){ byId('wall').classList.toggle('radar-open',open); byId('radar-toggle').setAttribute('aria-pressed',String(open)); byId('radar-toggle').textContent=open?'HIDE RADAR':'RADAR'; localStorage.setItem('overhead-radar',open?'open':'closed'); }
     async function update(){
       try{
         const response=await fetch('/status?t='+Date.now(),{cache:'no-store'}); if(!response.ok)throw new Error('status'); const d=await response.json();
@@ -238,9 +317,11 @@ PAGE = b"""<!doctype html>
         else { logo.removeAttribute('src'); logo.style.display='none'; badge.style.display='block'; }
         byId('altitude').textContent=altitude(d.altitude); byId('speed').textContent=d.speed==null?'--':Math.round(d.speed)+' KT'; byId('vertical').textContent=vertical(d.vertical_rate);
         byId('distance').textContent=number(d.distance_nm,1); byId('plane').style.transform='rotate('+number(d.track,0)+'deg)';
+        drawRadar(d.radar_contacts,d.radar_radius_nm);
         byId('footer-status').textContent=d.total+' CONTACTS  /  UPDATED '+d.updated;
       }catch(_){ byId('live').className='live error'; byId('mode').textContent='RECONNECTING'; }
     }
+    setRadar(localStorage.getItem('overhead-radar')==='open'); byId('radar-toggle').addEventListener('click',()=>setRadar(!byId('wall').classList.contains('radar-open'))); document.addEventListener('keydown',event=>{if(event.key.toLowerCase()==='r')setRadar(!byId('wall').classList.contains('radar-open'))});
     setInterval(update,2000); update(); document.addEventListener('dblclick',()=>document.documentElement.requestFullscreen?.());
   </script>
 </body>
@@ -256,7 +337,7 @@ class FrameState:
         self.logo_type = "image/svg+xml"
         self.payload: dict[str, Any] = {"mode": "starting", "updated": "never", "total": 0}
 
-    def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, total: int, logo: tuple[bytes, str, str] | None) -> None:
+    def update(self, image, mode: str, plane: dict[str, Any] | None, distance: float | None, aircraft: list[dict[str, Any]], settings, logo: tuple[bytes, str, str] | None) -> None:
         data = BytesIO()
         image.save(data, format="PNG")
         plane = plane or {}
@@ -265,7 +346,7 @@ class FrameState:
         payload = {
             "mode": mode,
             "updated": time.strftime("%H:%M:%S"),
-            "total": total,
+            "total": len(aircraft),
             "callsign": str(plane.get("flight") or "").strip(),
             "registration": str(plane.get("r") or "").strip(),
             "aircraft_type": str(plane.get("t") or "").strip(),
@@ -274,6 +355,8 @@ class FrameState:
             "operator_code": code, "airline_name": "", "logo_available": bool(logo_data),
             "logo_source": logo_source,
             "logo_revision": f"{code}-{hashlib.sha256(logo_data).hexdigest()[:12]}" if logo_data else code,
+            "radar_radius_nm": settings.radius_nm,
+            "radar_contacts": radar_contacts(aircraft, settings, plane),
         }
         with self.lock:
             self.png = data.getvalue()
@@ -283,10 +366,11 @@ class FrameState:
 
 
 def update_state(state: FrameState, settings, demo: bool, logos: LogoStore) -> None:
-    plane, distance, mode, total = fetch_snapshot(settings, demo=demo)
+    aircraft, mode = fetch_traffic_snapshot(settings, demo=demo)
+    plane, distance = select_nearest(aircraft, settings)
     image = render(plane, distance, mode)
     save_frame(image, settings)
-    state.update(image, mode, plane, distance, total, logos.get(operator_code(plane)))
+    state.update(image, mode, plane, distance, aircraft, settings, logos.get(operator_code(plane)))
 
 
 def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore) -> None:

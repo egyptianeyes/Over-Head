@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from monitor import operator_code, safe_svg
+from monitor import operator_code, radar_contacts, safe_svg
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -31,6 +31,13 @@ class OverHeadTests(unittest.TestCase):
     def test_svg_safety_filter(self):
         self.assertIsNotNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'))
         self.assertIsNone(safe_svg(b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>'))
+
+    def test_radar_centres_aircraft_at_home(self):
+        settings = Settings(latitude=51.5, longitude=-3.3, radius_nm=25)
+        plane = {"hex": "abc123", "flight": "TST123", "lat": 51.5, "lon": -3.3, "seen_pos": 0}
+        contacts = radar_contacts([plane], settings, plane)
+        self.assertEqual((contacts[0]["x"], contacts[0]["y"]), (50.0, 50.0))
+        self.assertTrue(contacts[0]["selected"])
 
 
 if __name__ == "__main__":

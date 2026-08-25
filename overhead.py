@@ -189,6 +189,15 @@ def save_frame(image: Image.Image, settings: Settings) -> None:
 def fetch_snapshot(
     settings: Settings, demo: bool = False
 ) -> tuple[dict[str, Any] | None, float | None, str, int]:
+    aircraft, status = fetch_traffic_snapshot(settings, demo=demo)
+    plane, distance = select_nearest(aircraft, settings)
+    return plane, distance, status, len(aircraft)
+
+
+def fetch_traffic_snapshot(
+    settings: Settings, demo: bool = False
+) -> tuple[list[dict[str, Any]], str]:
+    """Return the full nearby traffic list and its live/demo status."""
     status = "demo" if demo else "live"
     try:
         aircraft = DEMO["ac"] if demo else fetch_aircraft(settings)
@@ -197,8 +206,7 @@ def fetch_snapshot(
             raise
         aircraft = DEMO["ac"]
         status = "demo"
-    plane, distance = select_nearest(aircraft, settings)
-    return plane, distance, status, len(aircraft)
+    return aircraft, status
 
 
 def produce_frame(settings: Settings, demo: bool = False) -> tuple[Image.Image, str]:

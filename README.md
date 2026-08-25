@@ -18,6 +18,10 @@ logos are cached in `cache/logos`, so they remain available through a temporary
 network outage. An operator-code badge is always available when neither source
 has a matching logo.
 
+The optional right-hand radar plots every recently positioned aircraft returned
+inside the configured radius. Select **RADAR** or press `R` to open or hide it.
+The choice is remembered by the browser.
+
 ## Install
 
 Python 3.10 or later is recommended.
