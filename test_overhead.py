@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from monitor import aircraft_name, operator_code, radar_contacts, safe_svg
+from monitor import RADAR_RANGES, aircraft_name, operator_code, radar_contacts, safe_svg
 from overhead import DEMO, HEIGHT, WIDTH, Settings, produce_frame, select_nearest
 
 
@@ -43,6 +43,10 @@ class OverHeadTests(unittest.TestCase):
         contacts = radar_contacts([plane], settings, plane)
         self.assertEqual((contacts[0]["x"], contacts[0]["y"]), (50.0, 50.0))
         self.assertTrue(contacts[0]["selected"])
+
+    def test_radar_ranges_are_ordered_and_include_default(self):
+        self.assertEqual(tuple(sorted(RADAR_RANGES)), RADAR_RANGES)
+        self.assertIn(25, RADAR_RANGES)
 
 
 if __name__ == "__main__":

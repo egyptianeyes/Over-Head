@@ -19,8 +19,11 @@ network outage. An operator-code badge is always available when neither source
 has a matching logo.
 
 The optional right-hand radar plots every recently positioned aircraft returned
-inside the configured radius. Select **RADAR** or press `R` to open or hide it.
-The choice is remembered by the browser. The selected aircraft is highlighted
+inside the active tracking radius. Select **RADAR** or press `R` to open or hide
+it. Use the `−` and `+` controls to choose a 5, 10, 15, 25, 40, 60, or 100 NM
+range. Changing the radar scale also changes the ADSB.lol search radius, and the
+main card always displays the nearest aircraft inside it. Both radar visibility
+and range are remembered by the browser. The selected aircraft is highlighted
 without repeating its callsign, while other visible contacts retain labels when
 the radar is not crowded.
 

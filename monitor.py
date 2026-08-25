@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree
 
 from overhead import fetch_traffic_snapshot, load_settings, render, save_frame, select_nearest
@@ -38,6 +39,7 @@ JXCK_LOGO_URLS = (
 )
 USER_AGENT = "Over-Head/0.2 (+personal wall display)"
 MAX_LOGO_BYTES = 1_000_000
+RADAR_RANGES = (5, 10, 15, 25, 40, 60, 100)
 
 AIRCRAFT_NAMES = {
     "A306": "AIRBUS A300-600", "A319": "AIRBUS A319", "A320": "AIRBUS A320",
@@ -246,7 +248,7 @@ PAGE = b"""<!doctype html>
     .live.error .live-dot { background:var(--red); box-shadow:0 0 1em var(--red); }
     .content { min-height:0; display:grid; grid-template-columns:minmax(0,1fr); gap:clamp(14px,1.3vw,24px); }
     .wall.radar-open .content { grid-template-columns:minmax(0,1fr) clamp(320px,29vw,560px); }
-    main { min-height:0; border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.72); display:grid; grid-template-columns:minmax(0,1.15fr) minmax(270px,.85fr); overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.34); }
+    main { min-height:0; border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.72); display:grid; grid-template-columns:1fr; overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.34); }
     .information { min-width:0; padding:clamp(26px,4vw,76px); display:flex; flex-direction:column; justify-content:space-between; }
     .flight-heading { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:clamp(24px,3vw,56px); }
     .flight-copy { min-width:0; }
@@ -257,21 +259,11 @@ PAGE = b"""<!doctype html>
     .logo-box { width:clamp(180px,15vw,286px); height:clamp(94px,10vh,132px); display:grid; place-items:center; border:1px solid var(--line); border-radius:clamp(12px,1.2vw,20px); background:rgba(255,255,255,.97); overflow:hidden; }
     .logo-box img { display:none; width:88%; height:74%; object-fit:contain; }
     .operator-badge { color:#09212b; font-size:clamp(24px,2.5vw,44px); font-weight:850; letter-spacing:.08em; }
-    .metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
-    .metric-distance { display:none; }
+    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
     .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
     .metric-label { color:var(--muted); font-size:clamp(11px,1vw,18px); font-weight:700; letter-spacing:.18em; }
     .metric-value { margin-top:.18em; color:var(--white); font-size:clamp(27px,3.5vw,64px); font-weight:750; letter-spacing:-.035em; white-space:nowrap; }
     .metric:first-child .metric-value { color:var(--amber); }
-    .aircraft-panel { position:relative; display:grid; place-items:center; border-left:1px solid var(--line); overflow:hidden; }
-    .range-ring { position:absolute; width:min(70%,54vh); aspect-ratio:1; border:1px solid rgba(20,236,255,.13); border-radius:50%; }
-    .range-ring::before,.range-ring::after { content:""; position:absolute; inset:20%; border:1px solid rgba(20,236,255,.09); border-radius:50%; }
-    .range-ring::after { inset:40%; }
-    .plane { position:relative; width:min(48%,36vh); aspect-ratio:1; color:var(--cyan); filter:drop-shadow(0 0 22px rgba(20,236,255,.3)); transition:transform 900ms ease; }
-    .plane svg { width:100%; height:100%; overflow:visible; }
-    .distance { position:absolute; right:clamp(20px,3vw,54px); bottom:clamp(18px,3vh,44px); text-align:right; }
-    .distance strong { display:block; color:var(--white); font-size:clamp(34px,5vw,88px); line-height:.9; letter-spacing:-.045em; }
-    .distance span { color:var(--muted); font-size:clamp(12px,1.2vw,21px); font-weight:700; letter-spacing:.16em; }
     .radar-panel { display:none; min-width:0; min-height:0; padding:clamp(18px,1.8vw,30px); border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.78); grid-template-rows:auto minmax(0,1fr) auto; overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.28); }
     .wall.radar-open .radar-panel { display:grid; }
     .radar-heading { display:flex; align-items:end; justify-content:space-between; }
@@ -288,15 +280,15 @@ PAGE = b"""<!doctype html>
     .contact path { fill:currentColor; }
     .contact text { fill:currentColor; font:700 3.2px "Segoe UI",sans-serif; letter-spacing:.02em; }
     .radar-foot { display:flex; justify-content:space-between; }
-    .wall.radar-open main { grid-template-columns:1fr; }
-    .wall.radar-open .aircraft-panel { display:none; }
-    .wall.radar-open .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); }
-    .wall.radar-open .metric-distance { display:block; }
     .wall.radar-open .metric-value { font-size:clamp(26px,2.75vw,52px); }
     .wall.radar-open .callsign { font-size:clamp(64px,7.2vw,138px); }
+    .radar-zoom { display:flex; align-items:center; gap:clamp(8px,.7vw,12px); }
+    .zoom-button { width:2.15em; height:2.15em; padding:0; display:grid; place-items:center; cursor:pointer; border:1px solid var(--line); border-radius:50%; background:rgba(20,236,255,.055); color:var(--cyan); font:700 clamp(15px,1.2vw,21px)/1 "Segoe UI",sans-serif; }
+    .zoom-button:hover,.zoom-button:focus-visible { border-color:var(--cyan); background:rgba(20,236,255,.12); outline:none; }
+    .zoom-button:disabled { color:#34525e; border-color:#18303a; cursor:default; }
     footer { color:#52717e; font:600 clamp(11px,.9vw,16px)/1.2 "Segoe UI",sans-serif; letter-spacing:.1em; }
     @media (max-width:1150px) { .wall.radar-open .content { grid-template-columns:minmax(0,1fr) minmax(280px,36vw); } .wall.radar-open .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-    @media (max-aspect-ratio:4/3) { main { grid-template-columns:1fr; grid-template-rows:1fr .8fr; } .aircraft-panel { border-left:0; border-top:1px solid var(--line); } .callsign { font-size:clamp(56px,15vw,130px); } }
+    @media (max-aspect-ratio:4/3) { .callsign { font-size:clamp(56px,15vw,130px); } }
   </style>
 </head>
 <body>
@@ -313,11 +305,6 @@ PAGE = b"""<!doctype html>
           <div class="metric metric-distance"><div class="metric-label">DISTANCE</div><div class="metric-value"><span id="distance-main">--</span> NM</div></div>
         </div>
       </section>
-      <section class="aircraft-panel">
-        <div class="range-ring"></div>
-        <div class="plane" id="plane"><svg viewBox="-60 -60 120 120" aria-label="Aircraft heading"><path fill="currentColor" d="M0-56c5 0 8 7 9 14l4 26 35 20c5 3 8 8 8 13v5L13 10l-2 26 13 9v6L0 45l-24 6v-6l13-9-2-26-43 12v-5c0-5 3-10 8-13l35-20 4-26c1-7 4-14 9-14z"/></svg></div>
-        <div class="distance"><strong id="distance">--</strong><span>NAUTICAL MILES</span></div>
-      </section>
     </main>
     <aside class="radar-panel" aria-label="Nearby aircraft radar">
       <div class="radar-heading"><strong>WIDER AREA</strong><span id="radar-count">0 CONTACTS</span></div>
@@ -326,7 +313,7 @@ PAGE = b"""<!doctype html>
         <path class="radar-axis" d="M50 4V96M4 50H96"/><text x="50" y="2.8" text-anchor="middle" fill="#6c9aac" font-size="3">N</text>
         <g id="radar-contacts"></g><circle class="radar-home" cx="50" cy="50" r="1.25"/>
       </svg></div>
-      <div class="radar-foot"><span>HOME CENTRE</span><span id="radar-range">25 NM RANGE</span></div>
+      <div class="radar-foot"><span>HOME CENTRE</span><div class="radar-zoom"><button class="zoom-button" id="zoom-in" type="button" aria-label="Zoom in and reduce tracking range">&minus;</button><span id="radar-range">25 NM</span><button class="zoom-button" id="zoom-out" type="button" aria-label="Zoom out and increase tracking range">+</button></div></div>
     </aside>
     </div>
     <footer><span>SOURCE: ADSB.LOL</span><span id="footer-status">CONNECTING</span></footer>
@@ -334,6 +321,7 @@ PAGE = b"""<!doctype html>
   <script>
     const byId=id=>document.getElementById(id);
     const svgNS='http://www.w3.org/2000/svg';
+    const radarRanges=[5,10,15,25,40,60,100]; let currentRadarRange=25;
     const number=(value,digits=0)=>value==null?'--':Number(value).toFixed(digits);
     const altitude=value=>typeof value==='number'?Math.round(value).toLocaleString()+' FT':String(value||'--').toUpperCase();
     function vertical(value){ if(typeof value!=='number')return 'LEVEL'; if(value>150)return '\\u2191 '+Math.abs(Math.round(value)).toLocaleString(); if(value<-150)return '\\u2193 '+Math.abs(Math.round(value)).toLocaleString(); return 'LEVEL'; }
@@ -345,9 +333,16 @@ PAGE = b"""<!doctype html>
         if(!c.selected&&(contacts||[]).length<=10){ const label=document.createElementNS(svgNS,'text'); label.textContent=c.callsign; label.setAttribute('x','2.8'); label.setAttribute('y','-1.5'); label.setAttribute('transform','rotate('+(0-(Number(c.track)||0))+' 2.8 -1.5)'); group.appendChild(label); }
         layer.appendChild(group);
       }
-      byId('radar-count').textContent=(contacts||[]).length+' CONTACTS'; byId('radar-range').textContent=number(radius,0)+' NM RANGE';
+      currentRadarRange=Number(radius)||25; byId('radar-count').textContent=(contacts||[]).length+' CONTACTS'; byId('radar-range').textContent=number(radius,0)+' NM';
+      const rangeIndex=radarRanges.indexOf(currentRadarRange); byId('zoom-in').disabled=rangeIndex===0; byId('zoom-out').disabled=rangeIndex===radarRanges.length-1;
     }
     function setRadar(open){ byId('wall').classList.toggle('radar-open',open); byId('radar-toggle').setAttribute('aria-pressed',String(open)); byId('radar-toggle').textContent=open?'HIDE RADAR':'RADAR'; localStorage.setItem('overhead-radar',open?'open':'closed'); }
+    async function changeRadarRange(direction){
+      let index=radarRanges.indexOf(currentRadarRange); if(index<0)index=radarRanges.reduce((best,value,i)=>Math.abs(value-currentRadarRange)<Math.abs(radarRanges[best]-currentRadarRange)?i:best,0);
+      const next=radarRanges[Math.max(0,Math.min(radarRanges.length-1,index+direction))]; if(next===currentRadarRange)return;
+      currentRadarRange=next; localStorage.setItem('overhead-radar-range',String(next)); byId('radar-range').textContent=next+' NM';
+      await fetch('/radar-range?radius='+next,{cache:'no-store'});
+    }
     async function update(){
       try{
         const response=await fetch('/status?t='+Date.now(),{cache:'no-store'}); if(!response.ok)throw new Error('status'); const d=await response.json();
@@ -358,12 +353,14 @@ PAGE = b"""<!doctype html>
         if(d.logo_available){ logo.onload=()=>{logo.style.display='block';badge.style.display='none'}; logo.onerror=()=>{logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
         else { logo.removeAttribute('src'); logo.style.display='none'; badge.style.display='block'; }
         byId('altitude').textContent=altitude(d.altitude); byId('speed').textContent=d.speed==null?'--':Math.round(d.speed)+' KT'; byId('vertical').textContent=vertical(d.vertical_rate);
-        byId('distance').textContent=number(d.distance_nm,1); byId('distance-main').textContent=number(d.distance_nm,1); byId('plane').style.transform='rotate('+number(d.track,0)+'deg)';
+        byId('distance-main').textContent=number(d.distance_nm,1);
         drawRadar(d.radar_contacts,d.radar_radius_nm);
         byId('footer-status').textContent=d.total+' CONTACTS  /  UPDATED '+d.updated;
       }catch(_){ byId('live').className='live error'; byId('mode').textContent='RECONNECTING'; }
     }
     setRadar(localStorage.getItem('overhead-radar')==='open'); byId('radar-toggle').addEventListener('click',()=>setRadar(!byId('wall').classList.contains('radar-open'))); document.addEventListener('keydown',event=>{if(event.key.toLowerCase()==='r')setRadar(!byId('wall').classList.contains('radar-open'))});
+    byId('zoom-in').addEventListener('click',()=>changeRadarRange(-1)); byId('zoom-out').addEventListener('click',()=>changeRadarRange(1));
+    const savedRange=Number(localStorage.getItem('overhead-radar-range')); if(radarRanges.includes(savedRange)&&savedRange!==25){ currentRadarRange=savedRange; fetch('/radar-range?radius='+savedRange,{cache:'no-store'}); }
     setInterval(update,2000); update(); document.addEventListener('dblclick',()=>document.documentElement.requestFullscreen?.());
   </script>
 </body>
@@ -416,9 +413,10 @@ def update_state(state: FrameState, settings, demo: bool, logos: LogoStore) -> N
     state.update(image, mode, plane, distance, aircraft, settings, logos.get(operator_code(plane)))
 
 
-def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore) -> None:
+def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore, refresh_event: threading.Event) -> None:
     while True:
-        time.sleep(max(1.0, settings.refresh_seconds))
+        refresh_event.wait(timeout=max(1.0, settings.refresh_seconds))
+        refresh_event.clear()
         try:
             update_state(state, settings, demo, logos)
         except Exception as exc:
@@ -428,10 +426,11 @@ def refresh_loop(state: FrameState, settings, demo: bool, logos: LogoStore) -> N
                 state.payload["error"] = type(exc).__name__
 
 
-def handler_factory(state: FrameState):
+def handler_factory(state: FrameState, settings, refresh_event: threading.Event):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            path = self.path.split("?", 1)[0]
+            request_url = urlsplit(self.path)
+            path = request_url.path
             if path == "/": self.send(HTTPStatus.OK, "text/html; charset=utf-8", PAGE)
             elif path == "/frame.png":
                 with state.lock: body = state.png
@@ -443,6 +442,18 @@ def handler_factory(state: FrameState):
                 with state.lock: body, content_type = state.logo, state.logo_type
                 if body: self.send(HTTPStatus.OK, content_type, body, cache=True)
                 else: self.send(HTTPStatus.NOT_FOUND, "text/plain", b"No logo", cache=False)
+            elif path == "/radar-range":
+                try:
+                    radius = int(parse_qs(request_url.query).get("radius", [""])[0])
+                except (TypeError, ValueError):
+                    radius = 0
+                if radius not in RADAR_RANGES:
+                    self.send(HTTPStatus.BAD_REQUEST, "application/json", json.dumps({"error": "invalid range", "allowed": RADAR_RANGES}).encode(), cache=False)
+                else:
+                    settings.radius_nm = float(radius)
+                    with state.lock: state.payload["radar_radius_nm"] = radius
+                    refresh_event.set()
+                    self.send(HTTPStatus.OK, "application/json", json.dumps({"radius_nm": radius}).encode(), cache=False)
             else: self.send(HTTPStatus.NOT_FOUND, "text/plain", b"Not found")
 
         def send(self, status, content_type, body, cache=True) -> None:
@@ -456,9 +467,9 @@ def handler_factory(state: FrameState):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config.json"); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8765); parser.add_argument("--demo", action="store_true"); parser.add_argument("--open", action="store_true", dest="open_browser")
-    args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); update_state(state, settings, args.demo, logos)
-    threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos), daemon=True).start()
-    server = ThreadingHTTPServer((args.host, args.port), handler_factory(state)); url = f"http://{args.host}:{args.port}/"
+    args = parser.parse_args(); settings = load_settings(Path(args.config)); state = FrameState(); logos = LogoStore(); refresh_event = threading.Event(); update_state(state, settings, args.demo, logos)
+    threading.Thread(target=refresh_loop, args=(state, settings, args.demo, logos, refresh_event), daemon=True).start()
+    server = ThreadingHTTPServer((args.host, args.port), handler_factory(state, settings, refresh_event)); url = f"http://{args.host}:{args.port}/"
     print(f"Over-Head monitor running at {url}"); print("Double-click the display to enter browser full-screen mode.")
     if args.open_browser: webbrowser.open(url)
     try: server.serve_forever()
