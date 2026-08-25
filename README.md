@@ -20,7 +20,12 @@ has a matching logo.
 
 The optional right-hand radar plots every recently positioned aircraft returned
 inside the configured radius. Select **RADAR** or press `R` to open or hide it.
-The choice is remembered by the browser.
+The choice is remembered by the browser. The selected aircraft is highlighted
+without repeating its callsign, while other visible contacts retain labels when
+the radar is not crowded.
+
+Common ICAO aircraft type designators are expanded into readable manufacturer
+and model names, for example `B738` becomes `BOEING 737-800`.
 
 ## Install
 

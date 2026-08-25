@@ -31,12 +31,42 @@ SOARING_ASSET_URL = (
     "https://raw.githubusercontent.com/soaring-symbols/soaring-symbols/"
     "main/assets/{slug}/{filename}"
 )
-JXCK_LOGO_URL = (
-    "https://raw.githubusercontent.com/Jxck-S/airline-logos/"
-    "main/flightaware_logos/{code}.png"
+JXCK_LOGO_URLS = (
+    "https://raw.githubusercontent.com/Jxck-S/airline-logos/main/fr24_banners/{code}.png",
+    "https://raw.githubusercontent.com/Jxck-S/airline-logos/main/radarbox_banners/{code}.png",
+    "https://raw.githubusercontent.com/Jxck-S/airline-logos/main/flightaware_logos/{code}.png",
 )
 USER_AGENT = "Over-Head/0.2 (+personal wall display)"
 MAX_LOGO_BYTES = 1_000_000
+
+AIRCRAFT_NAMES = {
+    "A306": "AIRBUS A300-600", "A319": "AIRBUS A319", "A320": "AIRBUS A320",
+    "A321": "AIRBUS A321", "A20N": "AIRBUS A320NEO", "A21N": "AIRBUS A321NEO",
+    "A332": "AIRBUS A330-200", "A333": "AIRBUS A330-300", "A339": "AIRBUS A330-900NEO",
+    "A343": "AIRBUS A340-300", "A359": "AIRBUS A350-900", "A35K": "AIRBUS A350-1000",
+    "A388": "AIRBUS A380-800", "AT43": "ATR 42-300", "AT45": "ATR 42-500",
+    "AT72": "ATR 72-200", "AT75": "ATR 72-500", "AT76": "ATR 72-600",
+    "B712": "BOEING 717-200", "B733": "BOEING 737-300", "B734": "BOEING 737-400",
+    "B735": "BOEING 737-500", "B736": "BOEING 737-600", "B737": "BOEING 737-700",
+    "B738": "BOEING 737-800", "B739": "BOEING 737-900", "B38M": "BOEING 737 MAX 8",
+    "B39M": "BOEING 737 MAX 9", "B744": "BOEING 747-400", "B748": "BOEING 747-8",
+    "B752": "BOEING 757-200", "B753": "BOEING 757-300", "B763": "BOEING 767-300",
+    "B772": "BOEING 777-200", "B77L": "BOEING 777-200LR", "B77W": "BOEING 777-300ER",
+    "B788": "BOEING 787-8", "B789": "BOEING 787-9", "B78X": "BOEING 787-10",
+    "C152": "CESSNA 152", "C172": "CESSNA 172", "C182": "CESSNA 182",
+    "CRJ7": "BOMBARDIER CRJ700", "CRJ9": "BOMBARDIER CRJ900", "DH8D": "DE HAVILLAND DASH 8-400",
+    "E170": "EMBRAER E170", "E175": "EMBRAER E175", "E190": "EMBRAER E190",
+    "E195": "EMBRAER E195", "E290": "EMBRAER E190-E2", "E295": "EMBRAER E195-E2",
+    "P28A": "PIPER PA-28 CHEROKEE", "PC12": "PILATUS PC-12",
+}
+
+
+def aircraft_name(type_code: Any, description: Any = None) -> str:
+    """Expand a common ICAO aircraft designator into a readable model name."""
+    if isinstance(description, str) and description.strip():
+        return description.strip().upper()
+    code = str(type_code or "").strip().upper()
+    return AIRCRAFT_NAMES.get(code, "MODEL NOT IDENTIFIED" if code else "AIRCRAFT NOT IDENTIFIED")
 
 
 def operator_code(plane: dict[str, Any] | None) -> str:
@@ -149,7 +179,7 @@ class LogoStore:
         if not record or not record.get("slug"):
             return None
         slug = str(record["slug"])
-        for filename in ("icon.svg", "logo.svg"):
+        for filename in ("logo.svg", "icon.svg"):
             try:
                 data = safe_svg(self._download(SOARING_ASSET_URL.format(slug=slug, filename=filename)))
             except (OSError, ValueError, urllib.error.URLError, TimeoutError):
@@ -159,13 +189,14 @@ class LogoStore:
         return None
 
     def _jxck(self, code: str) -> tuple[bytes, str, str] | None:
-        try:
-            data = self._download(JXCK_LOGO_URL.format(code=code))
-        except (OSError, ValueError, urllib.error.URLError, TimeoutError):
-            return None
-        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            return None
-        return data, "image/png", "Jxck-S airline-logos"
+        for url in JXCK_LOGO_URLS:
+            try:
+                data = self._download(url.format(code=code))
+            except (OSError, ValueError, urllib.error.URLError, TimeoutError):
+                continue
+            if data.startswith(b"\x89PNG\r\n\x1a\n"):
+                return data, "image/png", "Jxck-S airline-logos"
+        return None
 
     def get(self, code: str) -> tuple[bytes, str, str] | None:
         if not re.fullmatch(r"[A-Z]{3}", code) or code in self._missing:
@@ -175,7 +206,7 @@ class LogoStore:
                 ("svg", "image/svg+xml", "Soaring Symbols"),
                 ("png", "image/png", "Jxck-S airline-logos"),
             ):
-                path = self.cache_dir / f"{code}.{suffix}"
+                path = self.cache_dir / f"{code}-wordmark.{suffix}"
                 if path.is_file():
                     return path.read_bytes(), content_type, source
             try:
@@ -186,7 +217,7 @@ class LogoStore:
             if result:
                 data, content_type, source = result
                 suffix = "svg" if content_type == "image/svg+xml" else "png"
-                (self.cache_dir / f"{code}.{suffix}").write_bytes(data)
+                (self.cache_dir / f"{code}-wordmark.{suffix}").write_bytes(data)
                 return result
             self._missing.add(code)
             return None
@@ -217,12 +248,15 @@ PAGE = b"""<!doctype html>
     .wall.radar-open .content { grid-template-columns:minmax(0,1fr) clamp(320px,29vw,560px); }
     main { min-height:0; border:1px solid var(--line); border-radius:clamp(16px,2vw,32px); background:rgba(0,2,7,.72); display:grid; grid-template-columns:minmax(0,1.15fr) minmax(270px,.85fr); overflow:hidden; box-shadow:inset 0 0 60px rgba(20,236,255,.025),0 28px 80px rgba(0,0,0,.34); }
     .information { min-width:0; padding:clamp(26px,4vw,76px); display:flex; flex-direction:column; justify-content:space-between; }
+    .flight-heading { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:clamp(24px,3vw,56px); }
+    .flight-copy { min-width:0; }
     .callsign { overflow:hidden; color:var(--white); font-size:clamp(64px,10.5vw,198px); font-weight:800; letter-spacing:-.065em; line-height:.88; white-space:nowrap; }
-    .identity-row { margin-top:clamp(18px,2.2vh,34px); display:flex; align-items:center; gap:clamp(18px,2vw,34px); min-height:clamp(64px,8vh,104px); }
-    .logo-box { flex:0 0 clamp(82px,8vw,142px); height:clamp(64px,8vh,104px); display:grid; place-items:center; border:1px solid var(--line); border-radius:clamp(12px,1.2vw,20px); background:rgba(255,255,255,.96); overflow:hidden; }
-    .logo-box img { display:none; width:82%; height:76%; object-fit:contain; }
+    .identity { margin-top:clamp(18px,2.2vh,34px); min-width:0; display:flex; flex-direction:column; gap:.24em; }
+    .registration { color:var(--muted); font-size:clamp(22px,2.5vw,44px); font-weight:700; letter-spacing:.1em; }
+    .aircraft-name { color:var(--white); font-size:clamp(17px,1.55vw,28px); font-weight:650; letter-spacing:.065em; }
+    .logo-box { width:clamp(180px,15vw,286px); height:clamp(94px,10vh,132px); display:grid; place-items:center; border:1px solid var(--line); border-radius:clamp(12px,1.2vw,20px); background:rgba(255,255,255,.97); overflow:hidden; }
+    .logo-box img { display:none; width:88%; height:74%; object-fit:contain; }
     .operator-badge { color:#09212b; font-size:clamp(24px,2.5vw,44px); font-weight:850; letter-spacing:.08em; }
-    .identity { min-width:0; color:var(--muted); font-size:clamp(22px,3.1vw,54px); font-weight:650; letter-spacing:.08em; }
     .metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:clamp(12px,2vw,30px); margin-top:clamp(24px,5vh,70px); }
     .metric-distance { display:none; }
     .metric { min-width:0; padding-top:clamp(12px,2vh,24px); border-top:1px solid var(--line); }
@@ -259,7 +293,7 @@ PAGE = b"""<!doctype html>
     .wall.radar-open .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); }
     .wall.radar-open .metric-distance { display:block; }
     .wall.radar-open .metric-value { font-size:clamp(26px,2.75vw,52px); }
-    .wall.radar-open .callsign { font-size:clamp(64px,9vw,168px); }
+    .wall.radar-open .callsign { font-size:clamp(64px,7.2vw,138px); }
     footer { color:#52717e; font:600 clamp(11px,.9vw,16px)/1.2 "Segoe UI",sans-serif; letter-spacing:.1em; }
     @media (max-width:1150px) { .wall.radar-open .content { grid-template-columns:minmax(0,1fr) minmax(280px,36vw); } .wall.radar-open .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-aspect-ratio:4/3) { main { grid-template-columns:1fr; grid-template-rows:1fr .8fr; } .aircraft-panel { border-left:0; border-top:1px solid var(--line); } .callsign { font-size:clamp(56px,15vw,130px); } }
@@ -271,7 +305,7 @@ PAGE = b"""<!doctype html>
     <div class="content">
     <main>
       <section class="information">
-        <div><div class="callsign" id="callsign">WAITING</div><div class="identity-row"><div class="logo-box" id="logo-box"><img id="operator-logo" alt=""><span class="operator-badge" id="operator-badge">---</span></div><div class="identity" id="identity">FETCHING AIRCRAFT</div></div></div>
+        <div class="flight-heading"><div class="flight-copy"><div class="callsign" id="callsign">WAITING</div><div class="identity"><span class="registration" id="registration">FETCHING AIRCRAFT</span><span class="aircraft-name" id="aircraft-name">AIRCRAFT NOT IDENTIFIED</span></div></div><div class="logo-box" id="logo-box"><img id="operator-logo" alt=""><span class="operator-badge" id="operator-badge">---</span></div></div>
         <div class="metrics">
           <div class="metric"><div class="metric-label">ALTITUDE</div><div class="metric-value" id="altitude">--</div></div>
           <div class="metric"><div class="metric-label">GROUND SPEED</div><div class="metric-value" id="speed">--</div></div>
@@ -308,7 +342,7 @@ PAGE = b"""<!doctype html>
       for(const c of contacts||[]){
         const group=document.createElementNS(svgNS,'g'); group.setAttribute('class','contact'+(c.selected?' selected':'')+(c.emergency?' emergency':'')); group.setAttribute('transform','translate('+c.x+' '+c.y+') rotate('+(Number(c.track)||0)+')');
         const plane=document.createElementNS(svgNS,'path'); plane.setAttribute('d','M0-2.3L.65-.25 2.3.7 2.3 1.2.6.7.45 2 1.15 2.5 1.15 2.8 0 2.5-1.15 2.8-1.15 2.5-.45 2-.6.7-2.3 1.2-2.3.7-.65-.25Z'); group.appendChild(plane);
-        if(c.selected||(contacts||[]).length<=10){ const label=document.createElementNS(svgNS,'text'); label.textContent=c.callsign; label.setAttribute('x','2.8'); label.setAttribute('y','-1.5'); label.setAttribute('transform','rotate('+(0-(Number(c.track)||0))+' 2.8 -1.5)'); group.appendChild(label); }
+        if(!c.selected&&(contacts||[]).length<=10){ const label=document.createElementNS(svgNS,'text'); label.textContent=c.callsign; label.setAttribute('x','2.8'); label.setAttribute('y','-1.5'); label.setAttribute('transform','rotate('+(0-(Number(c.track)||0))+' 2.8 -1.5)'); group.appendChild(label); }
         layer.appendChild(group);
       }
       byId('radar-count').textContent=(contacts||[]).length+' CONTACTS'; byId('radar-range').textContent=number(radius,0)+' NM RANGE';
@@ -319,7 +353,7 @@ PAGE = b"""<!doctype html>
         const response=await fetch('/status?t='+Date.now(),{cache:'no-store'}); if(!response.ok)throw new Error('status'); const d=await response.json();
         const mode=String(d.mode||'live').toLowerCase(); byId('live').className='live '+mode; byId('mode').textContent=mode.toUpperCase();
         byId('callsign').textContent=d.callsign||d.registration||'NO AIRCRAFT';
-        byId('identity').textContent=[d.airline_name,d.registration,d.aircraft_type].filter(Boolean).join('  /  ')||'IN RANGE';
+        byId('registration').textContent=d.registration||'REGISTRATION UNKNOWN'; byId('aircraft-name').textContent=d.aircraft_name+(d.aircraft_type?'  \\u00b7  '+d.aircraft_type:'');
         const logo=byId('operator-logo'),badge=byId('operator-badge'); badge.textContent=d.operator_code||'---';
         if(d.logo_available){ logo.onload=()=>{logo.style.display='block';badge.style.display='none'}; logo.onerror=()=>{logo.style.display='none';badge.style.display='block'}; logo.alt=(d.airline_name||d.operator_code||'Airline')+' logo'; logo.src='/operator-logo?v='+encodeURIComponent(d.logo_revision); }
         else { logo.removeAttribute('src'); logo.style.display='none'; badge.style.display='block'; }
@@ -358,6 +392,7 @@ class FrameState:
             "callsign": str(plane.get("flight") or "").strip(),
             "registration": str(plane.get("r") or "").strip(),
             "aircraft_type": str(plane.get("t") or "").strip(),
+            "aircraft_name": aircraft_name(plane.get("t"), plane.get("desc")),
             "altitude": plane.get("alt_baro"), "speed": plane.get("gs"), "vertical_rate": plane.get("baro_rate"),
             "track": plane.get("track") or 0, "distance_nm": distance, "squawk": plane.get("squawk"), "emergency": plane.get("emergency"),
             "operator_code": code, "airline_name": "", "logo_available": bool(logo_data),
